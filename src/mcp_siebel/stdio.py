@@ -25,9 +25,16 @@ import asyncio
 import os
 from typing import Any
 
-from mcp import types as mcp_types
-from mcp.server import Server as McpServer
+from mcp.server import Server, ServerRequestContext
 from mcp.server.stdio import stdio_server
+from mcp.types import (
+    CallToolRequestParams,
+    CallToolResult,
+    ListToolsResult,
+    PaginatedRequestParams,
+    TextContent,
+    Tool,
+)
 
 from .config import load_settings
 from .tools import SessionStore, ToolRegistry
@@ -105,47 +112,48 @@ def _enrich_schema(raw: dict[str, Any]) -> dict[str, Any]:
     return schema
 
 
-_mcp = McpServer("siebel-crm", instructions=_INSTRUCTIONS)
-
-
 _SESSION_ID_PROP: dict[str, Any] = {
     "type": "string",
     "description": "Session ID returned by the authenticate tool. Required for every tool call except authenticate.",
 }
 
 
-@_mcp.list_tools()
-async def _list_tools() -> list[mcp_types.Tool]:
+async def _list_tools(
+    ctx: ServerRequestContext[Any], params: PaginatedRequestParams | None
+) -> ListToolsResult:
     tools = []
     for t in registry.list_tools():
         schema = _enrich_schema(t["input_schema"])
         if t["name"] != "authenticate":
             schema["properties"]["session_id"] = _SESSION_ID_PROP
-        tools.append(mcp_types.Tool(
-            name=t["name"],
-            description=t["description"],
-            inputSchema=schema,
-        ))
-    return tools
+        tools.append(Tool(name=t["name"], description=t["description"], input_schema=schema))
+    return ListToolsResult(tools=tools)
 
 
-@_mcp.call_tool()
-async def _call_tool(name: str, arguments: dict) -> list[mcp_types.TextContent]:
-    args = dict(arguments or {})
+async def _call_tool(
+    ctx: ServerRequestContext[Any], params: CallToolRequestParams
+) -> CallToolResult:
+    name = params.name
+    args = dict(params.arguments or {})
     session_id = args.pop("session_id", None)
     session = sessions.get(session_id)
     if name == "authenticate" and session is None:
         session = sessions.create()
     result = await registry.call(name, args, session)
     content = result.get("content") or [{"type": "text", "text": str(result)}]
-    texts = [mcp_types.TextContent(type="text", text=c["text"]) for c in content if c.get("type") == "text"]
+    texts: list[Any] = [TextContent(type="text", text=c["text"]) for c in content if c.get("type") == "text"]
     # Append session_id so Claude can pass it to every subsequent tool call
     if name == "authenticate" and session is not None:
-        texts.append(mcp_types.TextContent(
-            type="text",
-            text=f"session_id: {session.session_id}",
-        ))
-    return texts
+        texts.append(TextContent(type="text", text=f"session_id: {session.session_id}"))
+    return CallToolResult(content=texts, is_error=bool(result.get("isError")))
+
+
+_mcp = Server(
+    "siebel-crm",
+    instructions=_INSTRUCTIONS,
+    on_list_tools=_list_tools,
+    on_call_tool=_call_tool,
+)
 
 
 async def _run() -> None:

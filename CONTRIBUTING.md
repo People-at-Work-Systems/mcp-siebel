@@ -26,8 +26,8 @@ invariants that must hold on every change:
 ## Releasing
 
 1. Run a secret scan: `gitleaks detect --source . --no-git` (or `trufflehog`).
-2. Check the `mcp` changelog — the `mcp<2` pin must stay until the 2.x
-   decorator-API migration is done.
+2. Check the `mcp` changelog for breaking changes in the 2.x line; bump the
+   `mcp>=2.0,<3` pin if a 3.0 lands.
 3. Bump `version` in `pyproject.toml` (Semantic Versioning).
 4. Commit, tag `vX.Y.Z`, push the tag.
 5. The `release.yml` workflow builds and publishes to PyPI via OIDC trusted
@@ -35,6 +35,10 @@ invariants that must hold on every change:
 
 ## A note on the `mcp` pin
 
-`mcp` 2.0 removed the `@McpServer.list_tools()` / `@McpServer.call_tool()`
-decorators that `stdio.py` and `http_server.py` rely on. The pin
-(`mcp>=1.0,<2`) is deliberate. Migrating to `mcp` 2.x is a separate task.
+The server uses the mcp 2.x lowlevel `Server` API — handlers are registered
+via the `on_list_tools=` / `on_call_tool=` constructor kwargs (mcp 2.0 removed
+the `@Server.list_tools()` / `@Server.call_tool()` decorators the 1.x code
+used). The pin is `mcp>=2.0,<3`. The stdio and SSE transports
+(`stdio_server`, `SseServerTransport` / `connect_sse` / `handle_post_message`),
+`Server.run()`, and `create_initialization_options()` all kept their v1
+signatures in v2, so the migration was confined to the handler registration.

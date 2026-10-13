@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "mcp>=1.0,<2",  # 2.0 removed the @McpServer decorators this server uses — hard pin
+    "mcp>=2.0,<3",  # v2 lowlevel Server uses on_list_tools/on_call_tool constructor kwargs (decorators removed in 2.0)
     "httpx>=0.28",
     "pydantic>=2",
     "pydantic-settings>=2",

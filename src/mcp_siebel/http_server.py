@@ -39,9 +39,16 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from mcp import types as mcp_types
-from mcp.server import Server as McpServer
+from mcp.server import Server, ServerRequestContext
 from mcp.server.sse import SseServerTransport
+from mcp.types import (
+    CallToolRequestParams,
+    CallToolResult,
+    ListToolsResult,
+    PaginatedRequestParams,
+    TextContent,
+    Tool,
+)
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
 from starlette.requests import Request
@@ -111,25 +118,25 @@ started_at = time.monotonic()
 # MCP SSE transport — wired to the shared registry/sessions above
 # ---------------------------------------------------------------------------
 
-_mcp = McpServer("siebel-crm")
 _sse = SseServerTransport("/messages/")
 
 
-@_mcp.list_tools()
-async def _list_tools() -> list[mcp_types.Tool]:
-    return [
-        mcp_types.Tool(
-            name=t["name"],
-            description=t["description"],
-            inputSchema=t["input_schema"],
-        )
-        for t in registry.list_tools()
-    ]
+async def _list_tools(
+    ctx: ServerRequestContext[Any], params: PaginatedRequestParams | None
+) -> ListToolsResult:
+    return ListToolsResult(
+        tools=[
+            Tool(name=t["name"], description=t["description"], input_schema=t["input_schema"])
+            for t in registry.list_tools()
+        ]
+    )
 
 
-@_mcp.call_tool()
-async def _call_tool(name: str, arguments: dict) -> list[mcp_types.TextContent]:
-    args = dict(arguments or {})
+async def _call_tool(
+    ctx: ServerRequestContext[Any], params: CallToolRequestParams
+) -> CallToolResult:
+    name = params.name
+    args = dict(params.arguments or {})
     session_id = args.pop("session_id", None)
     session = sessions.get(session_id)
     if name == "authenticate" and session is None:
@@ -138,7 +145,11 @@ async def _call_tool(name: str, arguments: dict) -> list[mcp_types.TextContent]:
     if name == "authenticate" and session is not None:
         result = {**result, "session_id": session.session_id}
     content = result.get("content") or [{"type": "text", "text": str(result)}]
-    return [mcp_types.TextContent(type="text", text=c["text"]) for c in content if c.get("type") == "text"]
+    texts: list[Any] = [TextContent(type="text", text=c["text"]) for c in content if c.get("type") == "text"]
+    return CallToolResult(content=texts, is_error=bool(result.get("isError")))
+
+
+_mcp = Server("siebel-crm", on_list_tools=_list_tools, on_call_tool=_call_tool)
 
 
 # ---------------------------------------------------------------------------
