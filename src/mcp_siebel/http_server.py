@@ -44,6 +44,7 @@ from mcp.server.sse import SseServerTransport
 from mcp.types import (
     CallToolRequestParams,
     CallToolResult,
+    ContentBlock,
     ListToolsResult,
     PaginatedRequestParams,
     TextContent,
@@ -145,7 +146,7 @@ async def _call_tool(
     if name == "authenticate" and session is not None:
         result = {**result, "session_id": session.session_id}
     content = result.get("content") or [{"type": "text", "text": str(result)}]
-    texts: list[Any] = [TextContent(type="text", text=c["text"]) for c in content if c.get("type") == "text"]
+    texts: list[ContentBlock] = [TextContent(type="text", text=c["text"]) for c in content if c.get("type") == "text"]
     return CallToolResult(content=texts, is_error=bool(result.get("isError")))
 
 

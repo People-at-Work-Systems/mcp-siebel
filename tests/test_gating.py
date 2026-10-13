@@ -5,6 +5,8 @@ DELETE_TOOLS and the disabled_tools property.
 
 from __future__ import annotations
 
+import pytest
+
 from mcp_siebel.config import AppSettings
 from mcp_siebel.tools import ToolRegistry
 
@@ -98,7 +100,8 @@ def test_list_tools_allow_delete_shows_delete_tool() -> None:
     assert not (names & WRITE_TOOLS)  # write still hidden
 
 
-async def test_call_refuses_disabled_write_tool_without_http() -> None:
+@pytest.mark.asyncio
+async def test_call_refuses_disabled_write_tool() -> None:
     """A gated tool must be refused at call() before any Siebel I/O."""
     reg = ToolRegistry(AppSettings())
     result = await reg.call("create_record", {"data": {"Last Name": "x"}}, None)
@@ -107,6 +110,7 @@ async def test_call_refuses_disabled_write_tool_without_http() -> None:
     assert "disabled" in text.lower()
 
 
+@pytest.mark.asyncio
 async def test_call_refuses_disabled_delete_tool() -> None:
     reg = ToolRegistry(AppSettings())
     result = await reg.call("delete_record", {}, None)

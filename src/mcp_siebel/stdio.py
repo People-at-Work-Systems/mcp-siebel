@@ -32,6 +32,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import (
     CallToolRequestParams,
     CallToolResult,
+    ContentBlock,
     ListToolsResult,
     PaginatedRequestParams,
     TextContent,
@@ -143,7 +144,7 @@ async def _call_tool(
         session = sessions.create()
     result = await registry.call(name, args, session)
     content = result.get("content") or [{"type": "text", "text": str(result)}]
-    texts: list[Any] = [TextContent(type="text", text=c["text"]) for c in content if c.get("type") == "text"]
+    texts: list[ContentBlock] = [TextContent(type="text", text=c["text"]) for c in content if c.get("type") == "text"]
     # Append session_id so Claude can pass it to every subsequent tool call
     if name == "authenticate" and session is not None:
         texts.append(TextContent(type="text", text=f"session_id: {session.session_id}"))
