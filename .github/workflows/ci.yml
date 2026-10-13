@@ -1,0 +1,71 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .[dev]
+      - run: ruff check .
+      - run: mypy src/mcp_siebel
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: macos-latest
+            python: "3.12"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e .[dev]
+      - run: pytest
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .[dev]
+      - run: python -m build
+
+  extra-isolation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: base install (no extras)
+        run: pip install .
+      - name: stdio imports without fastapi
+        run: |
+          python -c "import mcp_siebel.stdio"
+          python -c "import sys; import mcp_siebel.stdio; assert 'fastapi' not in sys.modules"
+      - name: http_server import fails without [http]
+        run: |
+          if python -c "import mcp_siebel.http_server" 2>/dev/null; then
+            echo "ERROR: http_server imported without [http] — dependency leak"; exit 1
+          else
+            echo "ok: http_server import failed without [http]"
+          fi
+      - name: with [http], http_server imports
+        run: |
+          pip install .[http]
+          python -c "import mcp_siebel.http_server"
