@@ -15,9 +15,9 @@ Extract the `mcp-siebel` MCP connector out of the UnifiedCRM monorepo into a sta
 
 ### Success criteria
 
-- `pip install mcp-siebel` works with no extras and runs the stdio MCP server via a `mcp-siebel` console script — no FastAPI/uvicorn installed.
+- `pip install mcp-siebel` works with no extras and runs the stdio MCP server via a `mcp-siebel` console script — no `fastapi` installed. (`uvicorn`/`starlette` arrive transitively via the `mcp` SDK, which lists them as core deps — this is unavoidable while `mcp<2` is pinned and is not an isolation violation.)
 - `pip install mcp-siebel[http]` additionally enables `mcp-siebel-http` (uvicorn HTTP/SSE server).
-- `import mcp_siebel` and `import mcp_siebel.stdio` succeed without `[http]` installed and pull in no FastAPI/uvicorn/prometheus. `import mcp_siebel.http_server` without `[http]` raises `ImportError` (fastapi missing); the `mcp-siebel-http` console script catches that and prints a friendly "install `mcp-siebel[http]`" message via the `_http_entry.py` shim.
+- `import mcp_siebel` and `import mcp_siebel.stdio` succeed without `[http]` installed and pull in no `fastapi` or `prometheus_fastapi_instrumentator` (`uvicorn`/`starlette` arrive transitively via `mcp` — not asserted). `import mcp_siebel.http_server` without `[http]` raises `ImportError` (fastapi missing); the `mcp-siebel-http` console script catches that and prints a friendly "install `mcp-siebel[http]`" message via the `_http_entry.py` shim.
 - A permanent automated test asserts no UnifiedCRM reference (from the §7 forbidden list) exists anywhere in the package source or bundled prompt.
 - The public GitHub repo has a LICENSE (MIT), README, pyproject, CI, and a clean secret scan (gitleaks) on the initial commit.
 - Tagging `v0.1.0` publishes the package to PyPI via OIDC trusted publishing.
@@ -106,7 +106,7 @@ mcp-siebel/
     ├── test_session_expiry.py
     ├── test_tool_error_handling.py
     ├── test_packaging.py                    # NEW — FastAPI isolation guard, §10
-    └── test_no_unifiedcrm_refs.py           # NEW — zero-coupling guard, §7
+    └── test_no_sibling_refs.py           # NEW — zero-coupling guard, §7
 ```
 
 **Files NOT copied:** `Dockerfile`, `requirements.txt` (superseded by `pyproject.toml`), `app/CLAUDE.md`, `__pycache__/` everywhere, the `app/` directory name itself (renamed to `mcp_siebel/`).
@@ -234,7 +234,7 @@ All current occurrences are non-runtime text. The scrub (§9) rewrites or remove
 | `tests/test_create_record_json.py` | 3 | comment mentioning `dashboard-service` | Rewrite comment generically. |
 | `mcp_stdio.py` | 56 | `"../../services/prompt-manager/prompts/siebel-system.md"` path | Replaced by `importlib.resources` load (§8). |
 
-### 7.3 Permanent guard — `tests/test_no_unifiedcrm_refs.py`
+### 7.3 Permanent guard — `tests/test_no_sibling_refs.py`
 
 ```python
 """The package must not reference any UnifiedCRM sibling service, in code or prompt."""
@@ -324,7 +324,7 @@ In `README.md`, a short "Acknowledgements" or "Origin" section contains exactly:
 
 > This project originated as part of UnifiedCRM, developed by People at Work Systems Software, and was extracted into a standalone package.
 
-This sentence is the only place `UnifiedCRM` / `People at Work Systems Software` appears. The `test_no_unifiedcrm_refs.py` guard scans only the installed package (`src/mcp_siebel/`), not the repo root `README.md`, so this note is allowed by construction.
+This sentence is the only place `UnifiedCRM` / `People at Work Systems Software` appears. The `test_no_sibling_refs.py` guard scans only the installed package (`src/mcp_siebel/`), not the repo root `README.md`, so this note is allowed by construction.
 
 ---
 
@@ -432,19 +432,22 @@ Standard Python: `__pycache__/`, `*.py[cod]`, `*.egg-info/`, `build/`, `dist/`, 
 ## 10. Testing
 
 - **Existing tests come along** (`tests/*.py`, 10 files). Their `from app.…` / `import app.…` imports are rewritten to `mcp_siebel` (§11 step 3). They mock the Siebel HTTP layer — no live Siebel needed. CI runs them on the matrix.
-- **New `tests/test_packaging.py`** — the FastAPI-isolation guard, runs on every `pytest`. It asserts only that the **stdio path** does not pull in the HTTP deps (importing `http_server` without `[http]` is *expected* to raise `ImportError` and is not tested here):
+- **New `tests/test_packaging.py`** — the FastAPI-isolation guard, runs on every `pytest`. It asserts only that the **stdio path** does not pull in the `[http]`-gated deps (`fastapi`, `prometheus_fastapi_instrumentator`). `uvicorn`/`starlette` are **not** asserted — the `mcp` SDK imports them transitively as core deps, so they are present on any install; that is unavoidable while `mcp<2` is pinned and is not an isolation violation. (Importing `http_server` without `[http]` is *expected* to raise `ImportError` and is not tested here.)
   ```python
-  """The stdio path must not pull in FastAPI/uvicorn/prometheus."""
+  """The stdio path must not pull in the [http]-gated deps (fastapi, prometheus)."""
   import sys
 
+  # uvicorn/starlette are excluded: mcp imports them transitively as core deps.
+  _HTTP_DEPS = ("fastapi", "prometheus_fastapi_instrumentator")
+
   def test_stdio_import_does_not_pull_http_deps() -> None:
-      for mod in ("fastapi", "uvicorn", "prometheus_fastapi_instrumentator"):
+      for mod in _HTTP_DEPS:
           sys.modules.pop(mod, None)
       import mcp_siebel.stdio  # noqa: F401
-      for mod in ("fastapi", "uvicorn", "prometheus_fastapi_instrumentator"):
-          assert mod not in sys.modules, f"stdio import pulled in {mod}"
+      pulled = [mod for mod in _HTTP_DEPS if mod in sys.modules]
+      assert not pulled, f"stdio import pulled in [http]-gated deps: {pulled}"
   ```
-- **New `tests/test_no_unifiedcrm_refs.py`** — see §7.3.
+- **New `tests/test_no_sibling_refs.py`** — the zero-coupling guard; see §7.3. (Named `test_no_sibling_refs.py` rather than the literal `test_no_unifiedcrm_refs.py`, so the filename itself stays free of the forbidden substring "unifiedcrm".)
 - **No live-Siebel tests in CI.** A manual pre-release smoke test: `pip install -e .[dev]`, `pytest`, then `mcp-siebel` against a real Siebel endpoint — confirm `initialize` + `tools/list` + one `authenticate` round-trip work.
 
 ---
@@ -513,7 +516,7 @@ Standard Python: `__pycache__/`, `*.py[cod]`, `*.egg-info/`, `build/`, `dist/`, 
 7. **Update `stdio.py` prompt loading** to `importlib.resources` + `SIEBEL_SYSTEM_PROMPT_PATH` per §8.1.
 8. **Add packaging & root files:** `pyproject.toml` (§6), `LICENSE` (MIT, copyright "People at Work Systems Software" — confirm exact legal name with user), `README.md` (§9.5), `CONTRIBUTING.md` (short), `.gitignore` (§9.6), `.env.example` (§9.3).
 9. **Add `src/mcp_siebel/py.typed`** (empty file).
-10. **Add the two new tests:** `tests/test_packaging.py` (§10) and `tests/test_no_unifiedcrm_refs.py` (§7.3).
+10. **Add the two new tests:** `tests/test_packaging.py` (§10) and `tests/test_no_sibling_refs.py` (§7.3).
 11. **Add CI:** `.github/workflows/ci.yml` and `release.yml` (§11).
 12. **Local verification:**
     ```bash

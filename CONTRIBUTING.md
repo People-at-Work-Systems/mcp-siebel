@@ -12,11 +12,13 @@ mypy src/mcp_siebel  # src only; tests carry pre-existing annotation debt
 The `test_packaging.py` and `test_no_sibling_refs.py` guards enforce two
 invariants that must hold on every change:
 
-- **FastAPI isolation** — `import mcp_siebel.stdio` must not pull `fastapi`,
-  `uvicorn`, or `prometheus_fastapi_instrumentator` into `sys.modules`. The
-  HTTP deps live only in `http_server.py` (imported via the `_http_entry.py`
-  shim) and only when the `[http]` extra is installed. Do not add a FastAPI
-  import to `__init__.py`, `stdio.py`, `tools.py`, or `_http_entry.py`.
+- **FastAPI isolation** — `import mcp_siebel.stdio` must not pull `fastapi` or
+  `prometheus_fastapi_instrumentator` into `sys.modules` (those are imported
+  only by `http_server.py`, which the stdio path never touches). `uvicorn` and
+  `starlette` are NOT gated this way — the `mcp` SDK imports them transitively
+  as core deps, so they arrive on any install regardless of `[http]`. Do not
+  add a `fastapi`/`prometheus` import to `__init__.py`, `stdio.py`, `tools.py`,
+  or `_http_entry.py`.
 - **Zero coupling** — the package must not reference any sibling service, in
   code, comments, docstrings, or the bundled prompt. See
   `tests/test_no_sibling_refs.py` for the forbidden list.

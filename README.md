@@ -9,7 +9,7 @@ MCP clients) and **HTTP/SSE** (for remote clients).
 ## Install
 
 ```bash
-# stdio transport (Claude Desktop) — light, no web deps
+# stdio transport (Claude Desktop) — no fastapi needed
 pip install mcp-siebel
 
 # stdio + HTTP/SSE server
@@ -18,6 +18,11 @@ pip install mcp-siebel[http]
 
 > **Requires `mcp>=1.0,<2`.** The `mcp` 2.x line is not yet supported; the
 > package pins `mcp<2` because 2.0 removed the decorator API this server uses.
+>
+> Note: the `mcp` SDK itself depends on `uvicorn` and `starlette` (core deps,
+> not extras), so a base `pip install mcp-siebel` does pull them transitively.
+> The `[http]` extra gates only `fastapi` and `prometheus-fastapi-instrumentator`
+> — the deps the HTTP/SSE server adds on top of what `mcp` already brings.
 
 ## Quick start — stdio (Claude Desktop)
 
