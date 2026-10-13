@@ -14,7 +14,9 @@ Optional:
     SIEBEL_MCP_MODE            standalone (default)
     SIEBEL_SSO_HEADER          SBL_USER (default)
     SIEBEL_DEFAULT_PAGE_SIZE   20 (default)
-    SIEBEL_DISABLED_TOOLS      delete_record (default)
+    SIEBEL_ALLOW_WRITE         false (default — read-only; set true to enable write tools)
+    SIEBEL_ALLOW_DELETE        false (default — read-only; set true to enable delete_record)
+    SIEBEL_DISABLED_TOOLS      (empty; write/delete gated by SIEBEL_ALLOW_WRITE/SIEBEL_ALLOW_DELETE)
     SIEBEL_SYSTEM_PROMPT_PATH  override the bundled system prompt file
     MCP_API_TOKEN              bearer token guard (unset = no auth)
 """

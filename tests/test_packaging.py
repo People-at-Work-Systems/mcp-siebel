@@ -9,7 +9,7 @@ Note: ``uvicorn`` and ``starlette`` are NOT asserted here, even though they are
 web-server deps, because the ``mcp`` SDK itself imports them at module load
 (they are core deps of ``mcp``, not extras). So ``import mcp_siebel.stdio``
 transitively pulls ``uvicorn``/``starlette`` via ``mcp`` regardless of the
-``[http]`` extra, and that is unavoidable while ``mcp>=1.0,<2`` is a dependency.
+``[http]`` extra, and that is unavoidable while ``mcp>=2.0,<3`` is a dependency.
 The property this test enforces is the one that genuinely holds and that the
 ``[http]`` extra gates: ``fastapi`` and ``prometheus-fastapi-instrumentator``
 are absent on a stdio-only import.
