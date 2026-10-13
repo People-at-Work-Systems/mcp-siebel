@@ -5,6 +5,17 @@ from __future__ import annotations
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Tools gated behind SIEBEL_ALLOW_WRITE / SIEBEL_ALLOW_DELETE (both default off,
+# so the server is read-only by default). See AppSettings.disabled_tools.
+WRITE_TOOLS: tuple[str, ...] = (
+    "create_record",
+    "create_record_json",
+    "update_record",
+    "create_child_record",
+    "upload_attachment",
+)
+DELETE_TOOLS: tuple[str, ...] = ("delete_record",)
+
 
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -52,6 +63,12 @@ class AppSettings(BaseSettings):
     # -- Demo mode ------------------------------------------------------------
     demo_enabled: bool = False
 
+    # -- Access gates (default off = read-only) -------------------------------
+    # When False, the corresponding tools are auto-added to disabled_tools and
+    # therefore unlisted by ToolRegistry.list_tools() and refused by call().
+    allow_write: bool = False
+    allow_delete: bool = False
+
     # -- Session lifetime -----------------------------------------------------
     # Absolute per-session TTL in ms. A session expires this long after its
     # creation (mirrors the fixed Siebel REST session lifetime). Must stay
@@ -66,7 +83,19 @@ class AppSettings(BaseSettings):
 
     @property
     def disabled_tools(self) -> list[str]:
-        return [t.strip() for t in self.disabled_tools_raw.split(",") if t.strip()]
+        """Explicit SIEBEL_DISABLED_TOOLS list plus the access-gate defaults.
+
+        When allow_write / allow_delete are False (the default, read-only mode),
+        the write tools and delete_record are appended here so the existing
+        ToolRegistry filter (which reads this property) hides and refuses them.
+        """
+        explicit = [t.strip() for t in self.disabled_tools_raw.split(",") if t.strip()]
+        gated: list[str] = []
+        if not self.allow_write:
+            gated.extend(WRITE_TOOLS)
+        if not self.allow_delete:
+            gated.extend(DELETE_TOOLS)
+        return explicit + gated
 
     # -- OAuth ----------------------------------------------------------------
     oauth_client_id: str = ""

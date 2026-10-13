@@ -18,7 +18,7 @@ from mcp_siebel.tools import SessionContext, ToolRegistry
 
 
 def test_create_record_json_is_registered_with_typed_schema():
-    reg = ToolRegistry(AppSettings())
+    reg = ToolRegistry(AppSettings(allow_write=True))
     tool = reg._tools.get("create_record_json")
     assert tool is not None, "create_record_json tool must be registered"
     # The CLAUDE.md invariant: properties must declare a concrete JSON Schema
@@ -33,7 +33,7 @@ def test_create_record_json_is_registered_with_typed_schema():
 
 @pytest.mark.asyncio
 async def test_create_record_json_returns_json_with_new_id():
-    reg = ToolRegistry(AppSettings())
+    reg = ToolRegistry(AppSettings(allow_write=True))
     session = SessionContext(session_id="s1")
     session.client = AsyncMock()
     # Siebel's PUT response is the created record, including its new Id.
@@ -62,7 +62,7 @@ async def test_create_record_json_returns_json_with_new_id():
 
 @pytest.mark.asyncio
 async def test_create_record_json_rejects_empty_data():
-    reg = ToolRegistry(AppSettings())
+    reg = ToolRegistry(AppSettings(allow_write=True))
     session = SessionContext(session_id="s1")
     session.client = AsyncMock()
     session.cache = AsyncMock()
