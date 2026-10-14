@@ -64,9 +64,54 @@ def _count_prose(result: dict[str, Any]) -> dict[str, Any]:
     return _text(f"Total records: **{total}**" if total is not None else "Count not available.")
 
 
+# The upsert / delete renderers take a *context* dict (not the query result
+# dict): the resolved BO/BC, the record the client returned (None for delete),
+# and the id / parent_id the message names. Each renderer reads only the keys
+# its message needs; the executor builds the context for the path it took.
+
+
+def _create_prose(ctx: dict[str, Any]) -> dict[str, Any]:
+    """The create-record prose format: a header naming the BO/BC then the record."""
+    return _text(
+        f"Created record in {ctx['business_object']}/{ctx['business_component']}:\n{_format_record(ctx['record'])}"
+    )
+
+
+def _create_json(ctx: dict[str, Any]) -> dict[str, Any]:
+    """The create-record JSON format: the created record serialised for a
+    programmatic caller (the new Id is in the result)."""
+    return _json_text(ctx["record"])
+
+
+def _update_prose(ctx: dict[str, Any]) -> dict[str, Any]:
+    """The update-record prose format: names the id and BO/BC, then the record."""
+    return _text(
+        f"Updated record {ctx['id']} in {ctx['business_object']}/{ctx['business_component']}:\n"
+        f"{_format_record(ctx['record'])}"
+    )
+
+
+def _child_create_prose(ctx: dict[str, Any]) -> dict[str, Any]:
+    """The child-create prose format: names the BO/BC/parent then the record."""
+    return _text(
+        f"Created child record(s) under {ctx['business_object']}/{ctx['business_component']}/{ctx['parent_id']}:\n"
+        f"{_format_record(ctx['record'])}"
+    )
+
+
+def _delete_prose(ctx: dict[str, Any]) -> dict[str, Any]:
+    """The delete format: a single line confirming which record was removed."""
+    return _text(f"Deleted record {ctx['id']} from {ctx['business_object']}/{ctx['business_component']}.")
+
+
 RENDERERS: dict[str, Renderer] = {
     "query_prose": _query_prose,
     "child_query_prose": _child_query_prose,
     "query_json": _query_json,
     "count_prose": _count_prose,
+    "create_prose": _create_prose,
+    "create_json": _create_json,
+    "update_prose": _update_prose,
+    "child_create_prose": _child_create_prose,
+    "delete_prose": _delete_prose,
 }
