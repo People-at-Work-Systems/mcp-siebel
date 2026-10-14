@@ -134,6 +134,71 @@ def test_bc_query_template_and_searchspec_arg_mutually_exclusive(tmp_path) -> No
         )
 
 
+def test_bc_query_template_and_searchspec_bind_mutually_exclusive(tmp_path) -> None:
+    """A searchspec_template and a bound ``searchspec`` are mutually exclusive too
+    — a fixed searchspec would override the template's whole purpose."""
+    with pytest.raises(_SpecError, match="mutually exclusive"):
+        _reg(
+            tmp_path,
+            {
+                "x": _bcq(
+                    bind={"business_object": "Account", "searchspec": "[Name] LIKE 'A*'"},
+                    props={"name": {"type": "string"}},
+                    required=["name"],
+                    template="[Name] = '{name}'",
+                )
+            },
+        )
+
+
+def test_bc_query_template_placeholder_outside_quotes_rejected(tmp_path) -> None:
+    """A template placeholder must sit inside a single-quoted literal — Siebel
+    treats a bare token as a field reference / operator, not a value."""
+    with pytest.raises(_SpecError, match="inside a single-quoted"):
+        _reg(
+            tmp_path,
+            {
+                "x": _bcq(
+                    bind={"business_object": "Account", "business_component": "Account"},
+                    props={"name": {"type": "string"}},
+                    required=["name"],
+                    template="{name} LIKE 'x'",
+                )
+            },
+        )
+
+
+def test_bc_query_unknown_bind_key_rejected(tmp_path) -> None:
+    """A bind key must name a parameter the executor actually reads."""
+    with pytest.raises(_SpecError, match="not known executor parameters"):
+        _reg(tmp_path, {"x": _bcq(bind={"bogus": "x"}, props={"name": {"type": "string"}}, required=["name"])})
+
+
+def test_bc_query_root_must_bind_or_require_business_object(tmp_path) -> None:
+    """Root scope: business_object must be bound or in input_schema.required."""
+    with pytest.raises(_SpecError, match="must be bound or listed in input_schema.required"):
+        _reg(tmp_path, {"x": _bcq(props={"name": {"type": "string"}}, required=["name"])})
+
+
+def test_bc_query_child_must_bind_or_require_parent_and_child_bc(tmp_path) -> None:
+    """Child scope: parent_id and child_business_component must each be bound or
+    required (business_object is required here, the other two are not)."""
+    with pytest.raises(_SpecError, match="must be bound or listed in input_schema.required"):
+        _reg(
+            tmp_path,
+            {"x": _bcq(scope="child", props={"business_object": {"type": "string"}}, required=["business_object"])},
+        )
+
+
+def test_bc_query_bind_satisfies_required_coverage(tmp_path) -> None:
+    """A bound parameter satisfies required-coverage without being in required."""
+    reg = _reg(
+        tmp_path,
+        {"x": _bcq(bind={"business_object": "Account"}, props={"searchspec": {"type": "string"}})},
+    )
+    assert "x" in reg._tools
+
+
 # ---------------------------------------------------------------------------
 # bind — fixed values merged with the caller's args
 # ---------------------------------------------------------------------------

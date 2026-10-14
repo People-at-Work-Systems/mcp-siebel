@@ -32,6 +32,7 @@ from ..handlers._common import (
 from ..kinds import _COMMON_FIELDS, _KindSpec, _SpecError
 from ..renderers import RENDERERS
 from ..siebel_client import SiebelError
+from ._validation import validate_bind_and_required
 
 if TYPE_CHECKING:
     from ..tools import ToolContext
@@ -59,10 +60,57 @@ _FORBIDDEN_TEMPLATE_CHARS = ('"', '[', ']')
 _BC_QUERY_ALLOWED_OPTIONS = frozenset({"scope", "result", "render", "bind", "searchspec_template"})
 _BC_QUERY_REQUIRED_OPTIONS = frozenset({"scope", "result", "render"})
 
+# Parameters execute_bc_query actually reads from the effective args (the bind
+# values merged with the caller's input). A bind key outside this set is a typo
+# that would silently do nothing, so it is rejected at load time.
+_BC_QUERY_BIND_KEYS = frozenset(
+    {
+        "business_object",
+        "business_component",
+        "fields",
+        "page_size",
+        "offset",
+        "sort_spec",
+        "childlinks",
+        "parent_id",
+        "child_business_component",
+        "searchspec",
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # Load-time validation of kind-specific options
 # ---------------------------------------------------------------------------
+
+
+def _placeholders_outside_quotes(template: str) -> list[str]:
+    """Return placeholder names in ``template`` that are NOT inside a single-quoted
+    literal. A Siebel searchspec string literal is ``'...'`` with ``''`` an embedded
+    quote; we walk the template tracking quote state and report ``{name}`` tokens
+    encountered while not inside a literal."""
+    outside: list[str] = []
+    in_quote = False
+    i = 0
+    n = len(template)
+    while i < n:
+        ch = template[i]
+        if ch == "'":
+            if in_quote and i + 1 < n and template[i + 1] == "'":
+                i += 2  # doubled quote — escaped, stays inside the literal
+                continue
+            in_quote = not in_quote
+            i += 1
+            continue
+        if ch == "{":
+            j = template.find("}", i + 1)
+            if j != -1 and _PLACEHOLDER_RE.fullmatch(template[i : j + 1]):
+                if not in_quote:
+                    outside.append(template[i + 1 : j])
+                i = j + 1
+                continue
+        i += 1
+    return outside
 
 
 def _validate_bc_query(entry: dict[str, Any], name: str, schema: dict[str, Any]) -> None:
@@ -84,13 +132,6 @@ def _validate_bc_query(entry: dict[str, Any], name: str, schema: dict[str, Any])
         raise _SpecError(f"bc_query entry {name!r} has unknown render {render!r} (known: {sorted(RENDERERS)})")
 
     props = set((schema.get("properties") or {}).keys())
-    bind = entry.get("bind")
-    if bind is not None:
-        if not isinstance(bind, dict):
-            raise _SpecError(f"bc_query entry {name!r} 'bind' must be an object")
-        overlap = set(bind.keys()) & props
-        if overlap:
-            raise _SpecError(f"bc_query entry {name!r}: bind key(s) {sorted(overlap)} also in input_schema")
     tmpl = entry.get("searchspec_template")
     if tmpl is not None:
         if not isinstance(tmpl, str):
@@ -99,12 +140,38 @@ def _validate_bc_query(entry: dict[str, Any], name: str, schema: dict[str, Any])
             raise _SpecError(
                 f"bc_query entry {name!r}: searchspec_template and a 'searchspec' argument are mutually exclusive"
             )
+        bind = entry.get("bind")
+        if isinstance(bind, dict) and "searchspec" in bind:
+            raise _SpecError(
+                f"bc_query entry {name!r}: searchspec_template and a bound 'searchspec' are mutually exclusive"
+            )
         placeholders = set(_PLACEHOLDER_RE.findall(tmpl))
         unknown = placeholders - props
         if unknown:
             raise _SpecError(
                 f"bc_query entry {name!r}: searchspec_template placeholder(s) {sorted(unknown)} not in input_schema"
             )
+        outside = _placeholders_outside_quotes(tmpl)
+        if outside:
+            raise _SpecError(
+                f"bc_query entry {name!r}: searchspec_template placeholder(s) {sorted(outside)} "
+                f"must sit inside a single-quoted literal"
+            )
+
+    # Shared bind (known keys, disjoint from input_schema) + required-parameter
+    # coverage. Run after the template checks so a template error is reported
+    # before an unrelated missing-business_object error.
+    required_params: tuple[str, ...] = ("business_object",)
+    if scope == "child":
+        required_params = ("business_object", "parent_id", "child_business_component")
+    validate_bind_and_required(
+        kind="bc_query",
+        entry=entry,
+        name=name,
+        schema=schema,
+        known_bind_keys=_BC_QUERY_BIND_KEYS,
+        required_params=required_params,
+    )
 
 
 # ---------------------------------------------------------------------------
