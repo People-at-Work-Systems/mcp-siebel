@@ -1,4 +1,5 @@
-"""Child-record handlers: create under a parent, and attachments."""
+"""Child-record handlers: attachments. The create-child-record handler moved
+to the generic ``bc_upsert`` executor (see executors/)."""
 
 from __future__ import annotations
 
@@ -6,7 +7,6 @@ from typing import TYPE_CHECKING, Any
 
 from ._common import (
     _error,
-    _format_record,
     _require_auth,
     _resolve_bo_bc,
     _text,
@@ -14,19 +14,6 @@ from ._common import (
 
 if TYPE_CHECKING:
     from ..tools import ToolContext
-
-
-async def _create_child_record(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    result = await auth.client.create_child_record(
-        resolved, bc, str(args["parent_id"]), str(args["child_business_component"]), args["data"]
-    )
-    return _text(f"Created child record(s) under {resolved}/{bc}/{args['parent_id']}:\n{_format_record(result)}")
 
 
 async def _upload_attachment(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:

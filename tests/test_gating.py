@@ -178,9 +178,11 @@ def test_normal_tool_alongside_always_enabled_is_still_disabled() -> None:
 
 _BULK_CREATE: dict[str, object] = {
     "description": "A NEW write tool added via the spec only.",
-    "kind": "python",
-    "handler": "mcp_siebel.handlers.records:_create_record",
+    "kind": "bc_upsert",
     "access": "write",
+    "operation": "create",
+    "scope": "root",
+    "render": "create_prose",
     "input_schema": {
         "type": "object",
         "properties": {"business_object": {"type": "string"}},

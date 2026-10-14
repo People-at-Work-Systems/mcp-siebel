@@ -152,7 +152,11 @@
     },
     "create_child_record": {
       "description": "Create child record(s) under a parent record.",
-      "handler": "mcp_siebel.handlers.children:_create_child_record",
+      "kind": "bc_upsert",
+      "access": "write",
+      "operation": "create",
+      "scope": "child",
+      "render": "child_create_prose",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -178,13 +182,15 @@
           "data"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "write"
+      }
     },
     "create_record": {
       "description": "Create a new Siebel record.",
-      "handler": "mcp_siebel.handlers.records:_create_record",
+      "kind": "bc_upsert",
+      "access": "write",
+      "operation": "create",
+      "scope": "root",
+      "render": "create_prose",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -202,13 +208,15 @@
           "data"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "write"
+      }
     },
     "create_record_json": {
       "description": "Create a new Siebel record and return it as structured JSON (the new Id is in the result).",
-      "handler": "mcp_siebel.handlers.records:_create_record_json",
+      "kind": "bc_upsert",
+      "access": "write",
+      "operation": "create",
+      "scope": "root",
+      "render": "create_json",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -226,13 +234,13 @@
           "data"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "write"
+      }
     },
     "delete_record": {
       "description": "Delete a Siebel record by Id.",
-      "handler": "mcp_siebel.handlers.records:_delete_record",
+      "kind": "bc_delete",
+      "access": "delete",
+      "render": "delete_prose",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -250,9 +258,7 @@
           "id"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "delete"
+      }
     },
     "describe_business_object": {
       "description": "Get field schema for a Siebel Business Object/Component.",
@@ -617,7 +623,11 @@
     },
     "update_record": {
       "description": "Update an existing Siebel record by Id.",
-      "handler": "mcp_siebel.handlers.records:_update_record",
+      "kind": "bc_upsert",
+      "access": "write",
+      "operation": "update",
+      "scope": "root",
+      "render": "update_prose",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -639,9 +649,7 @@
           "data"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "write"
+      }
     },
     "upload_attachment": {
       "description": "Upload a base64 file attachment to a Siebel record.",

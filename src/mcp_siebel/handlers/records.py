@@ -1,6 +1,7 @@
-"""Top-level record handlers: BC query / count / aggregate / get / create /
-update / delete, plus the records-local helpers they share (field-curation
-ranking, the scoped-query fallback, the field-error retry)."""
+"""Top-level record handlers: aggregate / get, plus the records-local helpers
+they share (field-curation ranking, the scoped-query fallback, the field-error
+retry). The create / update / delete handlers moved to the generic
+``bc_upsert`` / ``bc_delete`` executors (see executors/)."""
 
 from __future__ import annotations
 
@@ -13,7 +14,6 @@ from ._common import (
     _error_result,
     _format_hierarchical_record,
     _format_record,
-    _json_text,
     _require_auth,
     _resolve_bo_bc,
     _text,
@@ -348,56 +348,3 @@ async def _get_record_with_children(args: dict[str, Any], ctx: ToolContext) -> d
     if not record:
         return _text("No record found.")
     return _text(f"{resolved}/{bc} record {args['id']}:\n{_format_hierarchical_record(record)}")
-
-
-async def _create_record(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    data = args.get("data")
-    if not isinstance(data, dict) or not data:
-        return _error('The "data" parameter is required and must be a non-empty object.')
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    result = await auth.client.create_record(resolved, bc, data)
-    return _text(f"Created record in {resolved}/{bc}:\n{_format_record(result)}")
-
-
-async def _create_record_json(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """The JSON-returning twin of _create_record — same create, but returns
-    _json_text(result) so a caller can read the new record's Id
-    programmatically (mirrors query_records_json vs query_data)."""
-    data = args.get("data")
-    if not isinstance(data, dict) or not data:
-        return _error('The "data" parameter is required and must be a non-empty object.')
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    result = await auth.client.create_record(resolved, bc, data)
-    return _json_text(result)
-
-
-async def _update_record(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    result = await auth.client.update_record(resolved, bc, str(args["id"]), args["data"])
-    return _text(f"Updated record {args['id']} in {resolved}/{bc}:\n{_format_record(result)}")
-
-
-async def _delete_record(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    await auth.client.delete_record(resolved, bc, str(args["id"]))
-    return _text(f"Deleted record {args['id']} from {resolved}/{bc}.")
