@@ -216,6 +216,8 @@ async def test_new_write_tool_call_refused_when_gated(tmp_path) -> None:
 def test_always_enabled_with_write_access_rejected_at_load(tmp_path) -> None:
     """An entry that is both always_enabled and access "write" is rejected at
     load time — always_enabled must never bypass the access gate."""
+    from mcp_siebel.tools import _SpecError
+
     bad = {**_BULK_CREATE, "always_enabled": True}
-    reg = _registry_with_extra(tmp_path, {"always_write": bad})
-    assert reg._tools == {}  # load rejected
+    with pytest.raises(_SpecError, match="always_enabled is only allowed with access 'read'"):
+        _registry_with_extra(tmp_path, {"always_write": bad})

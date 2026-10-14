@@ -18,8 +18,10 @@ import os
 from copy import deepcopy
 from importlib.resources import files
 
+import pytest
+
 from mcp_siebel.config import AppSettings
-from mcp_siebel.tools import _KNOWN_KINDS, ToolRegistry, _resolve_handler
+from mcp_siebel.tools import _KNOWN_KINDS, ToolRegistry, _resolve_handler, _SpecError
 
 
 def _bundled_spec() -> dict[str, object]:
@@ -151,25 +153,24 @@ def test_spec_defs_resolved_from_override(tmp_path) -> None:
 
 
 def test_spec_unsupported_ref_rejected(tmp_path) -> None:
-    """An external or non-#$defs $ref fails the first load — no tools served."""
-    reg = _registry_with_spec(
-        tmp_path,
-        _full_valid_spec()
-        | {"query_data": _entry("q", {"business_object": {"$ref": "https://example.com/bo"}}, ["business_object"])},
-        {},
-    )
-    assert reg._tools == {}
-    assert reg.list_tools() == []
+    """An external or non-#$defs $ref aborts the first load — construction raises."""
+    with pytest.raises(_SpecError, match="unsupported \\$ref"):
+        _registry_with_spec(
+            tmp_path,
+            _full_valid_spec()
+            | {"query_data": _entry("q", {"business_object": {"$ref": "https://example.com/bo"}}, ["business_object"])},
+            {},
+        )
 
 
 def test_spec_unknown_ref_rejected(tmp_path) -> None:
-    reg = _registry_with_spec(
-        tmp_path,
-        _full_valid_spec()
-        | {"query_data": _entry("q", {"business_object": {"$ref": "#/$defs/nope"}}, ["business_object"])},
-        {"business_object": {"type": "string"}},
-    )
-    assert reg._tools == {}
+    with pytest.raises(_SpecError, match="unknown \\$ref target"):
+        _registry_with_spec(
+            tmp_path,
+            _full_valid_spec()
+            | {"query_data": _entry("q", {"business_object": {"$ref": "#/$defs/nope"}}, ["business_object"])},
+            {"business_object": {"type": "string"}},
+        )
 
 
 def test_spec_circular_ref_rejected(tmp_path) -> None:
@@ -177,13 +178,13 @@ def test_spec_circular_ref_rejected(tmp_path) -> None:
         "a": {"type": "object", "properties": {"b": {"$ref": "#/$defs/b"}}},
         "b": {"type": "object", "properties": {"a": {"$ref": "#/$defs/a"}}},
     }
-    reg = _registry_with_spec(
-        tmp_path,
-        _full_valid_spec()
-        | {"query_data": _entry("q", {"business_object": {"$ref": "#/$defs/a"}}, ["business_object"])},
-        defs,
-    )
-    assert reg._tools == {}
+    with pytest.raises(_SpecError, match="circular \\$ref"):
+        _registry_with_spec(
+            tmp_path,
+            _full_valid_spec()
+            | {"query_data": _entry("q", {"business_object": {"$ref": "#/$defs/a"}}, ["business_object"])},
+            defs,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -265,30 +266,30 @@ def test_spec_subset_is_accepted_not_mirrored(tmp_path) -> None:
 def test_spec_unknown_kind_rejected(tmp_path) -> None:
     spec = _full_valid_spec()
     spec["query_data"] = {**spec["query_data"], "kind": "bogus"}
-    reg = _registry_with_spec(tmp_path, spec)
-    assert reg._tools == {}
+    with pytest.raises(_SpecError, match="unknown kind"):
+        _registry_with_spec(tmp_path, spec)
 
 
 def test_spec_missing_kind_rejected(tmp_path) -> None:
     spec = _full_valid_spec()
     spec["query_data"] = {k: v for k, v in spec["query_data"].items() if k != "kind"}
-    reg = _registry_with_spec(tmp_path, spec)
-    assert reg._tools == {}
+    with pytest.raises(_SpecError, match="invalid entry for 'query_data'"):
+        _registry_with_spec(tmp_path, spec)
 
 
 def test_spec_missing_handler_rejected(tmp_path) -> None:
     spec = _full_valid_spec()
     spec["query_data"] = {k: v for k, v in spec["query_data"].items() if k != "handler"}
-    reg = _registry_with_spec(tmp_path, spec)
-    assert reg._tools == {}
+    with pytest.raises(_SpecError, match="invalid entry for 'query_data'"):
+        _registry_with_spec(tmp_path, spec)
 
 
 def test_spec_unresolvable_handler_rejected(tmp_path) -> None:
     """A handler pointing at a missing attribute fails the load."""
     spec = _full_valid_spec()
     spec["query_data"] = {**spec["query_data"], "handler": "mcp_siebel.handlers.records:no_such_func"}
-    reg = _registry_with_spec(tmp_path, spec)
-    assert reg._tools == {}
+    with pytest.raises(_SpecError, match="no attribute 'no_such_func'"):
+        _registry_with_spec(tmp_path, spec)
 
 
 def test_spec_handler_outside_package_rejected(tmp_path) -> None:
@@ -296,16 +297,16 @@ def test_spec_handler_outside_package_rejected(tmp_path) -> None:
     only permits handler-package modules."""
     spec = _full_valid_spec()
     spec["query_data"] = {**spec["query_data"], "handler": "mcp_siebel.siebel_client:SiebelClient"}
-    reg = _registry_with_spec(tmp_path, spec)
-    assert reg._tools == {}
+    with pytest.raises(_SpecError, match="is not under"):
+        _registry_with_spec(tmp_path, spec)
 
 
 def test_spec_invalid_entry_rejected(tmp_path) -> None:
     """One invalid entry rejects the whole spec (not just that tool)."""
     spec = _full_valid_spec()
     spec["query_data"] = {"description": 123, "input_schema": {"type": "object", "properties": {}}}
-    reg = _registry_with_spec(tmp_path, spec)
-    assert reg._tools == {}
+    with pytest.raises(_SpecError, match="invalid entry for 'query_data'"):
+        _registry_with_spec(tmp_path, spec)
 
 
 def test_spec_duplicate_tool_name_rejected(tmp_path) -> None:
@@ -318,8 +319,8 @@ def test_spec_duplicate_tool_name_rejected(tmp_path) -> None:
     )
     settings = AppSettings()
     settings.tools_spec_path = str(spec)
-    reg = ToolRegistry(settings)
-    assert reg._tools == {}
+    with pytest.raises(_SpecError, match="duplicate key 'query_data'"):
+        ToolRegistry(settings)
 
 
 # ---------------------------------------------------------------------------
@@ -331,15 +332,15 @@ def test_spec_duplicate_tool_name_rejected(tmp_path) -> None:
 def test_spec_zero_session_tools_rejected(tmp_path) -> None:
     """A spec with no establishes_session tool is rejected — exactly one is
     required so the transports have a session-establishment tool to call."""
-    reg = _registry_with_spec(tmp_path, {"query_data": _bundled_tools()["query_data"]})
-    assert reg._tools == {}
+    with pytest.raises(_SpecError, match="exactly one tool must mark establishes_session"):
+        _registry_with_spec(tmp_path, {"query_data": _bundled_tools()["query_data"]})
 
 
 def test_spec_two_session_tools_rejected(tmp_path) -> None:
     spec = _full_valid_spec()
     spec["query_data"] = {**spec["query_data"], "establishes_session": True}
-    reg = _registry_with_spec(tmp_path, spec)
-    assert reg._tools == {}
+    with pytest.raises(_SpecError, match="found 2"):
+        _registry_with_spec(tmp_path, spec)
 
 
 def test_spec_session_tool_must_be_always_enabled(tmp_path) -> None:
@@ -347,8 +348,8 @@ def test_spec_session_tool_must_be_always_enabled(tmp_path) -> None:
     auth = {k: v for k, v in spec["authenticate"].items() if k != "always_enabled"}
     auth["establishes_session"] = True
     spec["authenticate"] = auth
-    reg = _registry_with_spec(tmp_path, spec)
-    assert reg._tools == {}
+    with pytest.raises(_SpecError, match="must be always_enabled"):
+        _registry_with_spec(tmp_path, spec)
 
 
 def test_spec_session_tool_must_be_read_access(tmp_path) -> None:
@@ -356,8 +357,8 @@ def test_spec_session_tool_must_be_read_access(tmp_path) -> None:
     always_enabled is only allowed with read — so this is rejected at load)."""
     spec = _full_valid_spec()
     spec["authenticate"] = {**spec["authenticate"], "access": "write"}
-    reg = _registry_with_spec(tmp_path, spec)
-    assert reg._tools == {}
+    with pytest.raises(_SpecError, match="always_enabled is only allowed with access 'read'"):
+        _registry_with_spec(tmp_path, spec)
 
 
 def test_spec_session_tool_name_exposed(tmp_path) -> None:
@@ -368,23 +369,32 @@ def test_spec_session_tool_name_exposed(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# First-load fallback — a missing/corrupt spec serves no tools but still starts
+# First-load failure is fatal — a missing/corrupt/invalid spec aborts startup
 # ---------------------------------------------------------------------------
 
 
-def test_spec_fallback_on_missing_file(tmp_path) -> None:
+def test_spec_first_load_missing_file_raises(tmp_path) -> None:
+    """A missing spec on the very first load aborts construction (non-zero
+    startup) instead of silently serving no tools."""
     settings = AppSettings()
     settings.tools_spec_path = str(tmp_path / "does-not-exist.json")
-    reg = ToolRegistry(settings)
-    assert reg._tools == {}
-    assert reg.list_tools() == []
+    with pytest.raises(_SpecError, match="tool spec file unavailable"):
+        ToolRegistry(settings)
 
 
-def test_spec_fallback_on_corrupt_json(tmp_path) -> None:
+def test_spec_first_load_corrupt_json_raises(tmp_path) -> None:
     spec = tmp_path / "bad.json"
     spec.write_text("{not valid json", encoding="utf-8")
     settings = AppSettings()
     settings.tools_spec_path = str(spec)
-    reg = ToolRegistry(settings)
-    assert reg._tools == {}
-    assert reg.list_tools() == []
+    with pytest.raises(_SpecError, match="invalid JSON"):
+        ToolRegistry(settings)
+
+
+def test_spec_first_load_error_names_the_entry(tmp_path) -> None:
+    """The fatal first-load error names the offending entry and rule."""
+    spec = _full_valid_spec()
+    spec["query_data"] = {**spec["query_data"], "kind": "bogus"}
+    with pytest.raises(_SpecError, match="query_data") as exc_info:
+        _registry_with_spec(tmp_path, spec)
+    assert "unknown kind" in str(exc_info.value)

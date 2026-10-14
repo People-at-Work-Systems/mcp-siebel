@@ -198,6 +198,7 @@ async def health() -> dict[str, Any]:
         "mode": settings.mcp_mode,
         "uptime": int(time.monotonic() - started_at),
         "sessions": sessions.count(),
+        **registry.health_status(),
     }
 
 

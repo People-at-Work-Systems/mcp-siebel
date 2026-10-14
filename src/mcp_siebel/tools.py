@@ -13,10 +13,11 @@ The spec may use a top-level ``$defs`` block with ``$ref`` for shared parameter
 definitions; the loader inlines every ``$ref`` before exposing schemas, so
 clients always receive a fully-resolved inputSchema. Every reload re-runs the
 full pipeline (parse with duplicate detection → deref → validate → per-entry
-kind + handler resolution) and only swaps in the new set on success; on any
-failure the last valid set keeps serving and the failure is logged. If the very
-first load fails (no last valid set) no tools are served — the handlers come
-from the spec, so without it the set of tools is unknown.
+kind + handler + access/session-rule resolution) and only swaps in the new set
+on success; on any failure the last valid set keeps serving and the failure is
+logged. If the very first load fails (no last valid set) construction raises
+``_SpecError`` so the process exits non-zero with a clear error — the handlers
+come from the spec, so without it the set of tools is unknown.
 """
 
 from __future__ import annotations
@@ -283,7 +284,8 @@ class ToolRegistry:
     validate → per-entry kind + handler resolution) and only swaps in the new
     set on success; on any failure the last valid set keeps serving and the
     failure is logged. If the very first load fails there is no last valid set,
-    so no tools are served until a valid spec appears.
+    so construction raises ``_SpecError`` (the process exits non-zero with a
+    clear error) rather than serving an unknown tool set.
     """
 
     def __init__(self, settings: AppSettings) -> None:
@@ -295,6 +297,11 @@ class ToolRegistry:
         # Name of the spec's establishes_session tool; set on each successful
         # load. None only when no spec has loaded yet.
         self._session_tool_name: str | None = None
+        # True until the first successful load. A failure before then is fatal:
+        # without a valid spec the set of tools is unknown, so construction
+        # raises and the process exits non-zero with a clear error. After the
+        # first good load a reload failure is non-fatal (log + keep last valid).
+        self._first_load: bool = True
         self._reload_if_changed()
 
     @property
@@ -304,6 +311,15 @@ class ToolRegistry:
         Set on every successful load; a successful load always has exactly one."""
         assert self._session_tool_name is not None, "no tool spec loaded"
         return self._session_tool_name
+
+    def health_status(self) -> dict[str, Any]:
+        """Read-only snapshot for /health: how many tools are loaded and from
+        which spec file (path + mtime). Does not trigger a reload."""
+        return {
+            "tools": len(self._tools),
+            "spec_path": self._spec_path,
+            "spec_mtime": self._spec_mtime,
+        }
 
     def _load_valid_tools(self) -> dict[str, ToolSpec]:
         """Read, parse, deref, validate, and resolve handlers for the spec file.
@@ -381,16 +397,18 @@ class ToolRegistry:
 
     def _reload_if_changed(self) -> None:
         """Re-read the spec file if its mtime changed since the last load. On a
-        successful reload, swap in the new tool set; on failure, keep the last
-        valid set (or serve nothing if there isn't one yet)."""
+        successful reload, swap in the new tool set. On a reload failure after
+        the first good load, keep the last valid set and log. On a failure
+        during the very first load, raise ``_SpecError`` so construction aborts
+        and the process exits non-zero with a clear error (which entry, which
+        rule) — without a valid spec the set of tools is unknown."""
         with self._lock:
             try:
                 mtime = os.stat(self._spec_path).st_mtime_ns
             except OSError:
-                if self._tools:
-                    log.warning("Tool spec file unavailable: %s — keeping current tools", self._spec_path)
-                else:
-                    log.warning("Tool spec file unavailable: %s — no tools loaded", self._spec_path)
+                if self._first_load:
+                    raise _SpecError(f"tool spec file unavailable: {self._spec_path}") from None
+                log.warning("Tool spec file unavailable: %s — keeping current tools", self._spec_path)
                 self._spec_mtime = None
                 return
             if mtime == self._spec_mtime:
@@ -402,14 +420,14 @@ class ToolRegistry:
                 # Record this mtime so a broken file isn't re-read on every list
                 # call; it'll be retried when the file changes again.
                 self._spec_mtime = mtime
-                if self._tools:
-                    log.warning("Tool spec reload failed — keeping current tools (%s): %s", exc, self._spec_path)
-                else:
-                    log.warning("Tool spec load failed — no tools loaded (%s): %s", exc, self._spec_path)
+                if self._first_load:
+                    raise
+                log.warning("Tool spec reload failed — keeping current tools (%s): %s", exc, self._spec_path)
                 return
 
             self._tools = built
             self._spec_mtime = mtime
+            self._first_load = False
             log.info("Loaded %d tool specs from %s", len(built), self._spec_path)
             self._warn_disabled_always_enabled(built)
 
