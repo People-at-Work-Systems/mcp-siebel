@@ -13,9 +13,10 @@ emitted placeholder tokens like '<?>'. That produced:
     from describe_business_object(Account, Contact) — Contact lives in its own
     BO, not Account's.
 
-These tests pin the three fixes: rich schemas (descriptions + `required`),
-placeholder-field rejection before any Siebel call, the safe ['Id'] retry, and
-the describe_business_object BO fallback.
+These tests pin the fixes: rich schemas (descriptions + `required`, now authored
+in ``tool_specs.json`` and served via the registry), placeholder-field rejection
+before any Siebel call, the safe ['Id'] retry, and the describe_business_object
+BO fallback.
 """
 
 from __future__ import annotations
@@ -37,37 +38,12 @@ from mcp_siebel.tools import (
     ToolContext,
     _describe_business_object,
     _query_data,
-    _schema,
     _validate_fields_arg,
 )
 
 # ---------------------------------------------------------------------------
-# _schema
+# Registry-served schema (authored in tool_specs.json, $ref-resolved by the loader)
 # ---------------------------------------------------------------------------
-
-
-def test_schema_adds_description_for_known_fields():
-    schema = _schema("business_object", "fields")
-    assert schema["type"] == "object"
-    assert schema["properties"]["business_object"] == {
-        "type": "string",
-        "description": schema["properties"]["business_object"]["description"],
-    }
-    assert "NEVER pass placeholder" in schema["properties"]["fields"]["description"]
-
-
-def test_schema_keeps_concrete_type_for_every_property():
-    # Claude Desktop rejects properties without a concrete JSON Schema type —
-    # the descriptions/required must not displace the "type" key.
-    schema = _schema("business_object", "fields", "searchspec")
-    for prop in schema["properties"].values():
-        assert prop["type"] == "string"
-
-
-def test_schema_emits_required_only_when_given():
-    assert "required" not in _schema("business_object", "business_component")
-    schema = _schema("business_object", "id", required=("business_object", "id"))
-    assert schema["required"] == ["business_object", "id"]
 
 
 def test_query_data_schema_marks_business_object_required():

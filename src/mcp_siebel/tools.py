@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from importlib.resources import files
@@ -22,9 +23,10 @@ from .siebel_client import SiebelClient, SiebelError, SiebelRecord
 
 log = logging.getLogger("mcp-siebel")
 
-# Bundled default tool-spec file (name/description/inputSchema per tool). The
-# registry reads this — or an override at SIEBEL_TOOLS_SPEC_PATH — and hot-
-# reloads it by mtime. See _load_spec / ToolRegistry._reload_if_changed.
+# Bundled default tool-spec file (description + inputSchema per tool, with shared
+# parameter definitions under top-level $defs referenced via $ref). The registry
+# reads this — or an override at SIEBEL_TOOLS_SPEC_PATH — inlines every $ref,
+# validates, and hot-reloads it by mtime. See ToolRegistry._reload_if_changed.
 
 
 ToolHandler = Callable[[dict[str, Any], "ToolContext"], Awaitable[dict[str, Any]]]
@@ -115,32 +117,50 @@ def _resolve_spec_path(settings: AppSettings) -> str:
     return str(files("mcp_siebel") / "specs" / "tool_specs.json")
 
 
-def _load_spec(path: str) -> dict[str, Any] | None:
-    """Read and parse the tool-spec JSON at ``path``.
+class _SpecError(Exception):
+    """Raised when a tool-spec file is unreadable, unparseable, has bad $refs,
+    fails validation, or doesn't cover the handlers exactly. The registry treats
+    any _SpecError as a failed reload and keeps the last valid tool set."""
 
-    Returns the parsed object (tool name → entry) on success, or ``None`` on any
-    read/parse error so the caller can serve degraded placeholder specs instead
-    of crashing the server over a bad spec file.
-    """
-    try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-    except OSError as exc:
-        log.warning("Tool spec file not readable at %s: %s — serving degraded specs", path, exc)
-        return None
-    except json.JSONDecodeError as exc:
-        log.warning("Tool spec file is not valid JSON at %s: %s — serving degraded specs", path, exc)
-        return None
-    if not isinstance(data, dict):
-        log.warning("Tool spec file at %s must be a JSON object keyed by tool name — serving degraded specs", path)
-        return None
-    return data
+
+def _no_dup_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """``object_pairs_hook`` that rejects duplicate keys anywhere in the spec —
+    in particular duplicate tool names under ``tools`` (name uniqueness)."""
+    seen: set[str] = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise _SpecError(f"duplicate key {key!r}")
+        seen.add(key)
+    return dict(pairs)
+
+
+def _deref(node: Any, defs: dict[str, Any], _stack: tuple[str, ...] = ()) -> Any:
+    """Inline every local ``$ref`` (``#/$defs/<name>``) in ``node`` against
+    ``defs``, returning a plain schema with no ``$ref`` left — MCP clients get a
+    fully-resolved inputSchema. External refs are unsupported (they'd need file
+    I/O at load time); cycles raise. Definitions are deep-copied so tools never
+    share mutable property dicts."""
+    if isinstance(node, dict):
+        if "$ref" in node:
+            ref = node["$ref"]
+            prefix = "#/$defs/"
+            if not isinstance(ref, str) or not ref.startswith(prefix):
+                raise _SpecError(f"unsupported $ref {ref!r} (only '#/$defs/<name>' is allowed)")
+            name = ref[len(prefix):]
+            if name in _stack:
+                raise _SpecError(f"circular $ref: {' -> '.join([*_stack, name])}")
+            if name not in defs:
+                raise _SpecError(f"unknown $ref target {name!r}")
+            return _deref(deepcopy(defs[name]), defs, (*_stack, name))
+        return {k: _deref(v, defs, _stack) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_deref(item, defs, _stack) for item in node]
+    return node
 
 
 def _valid_spec_entry(entry: Any) -> bool:
-    """Light per-entry validation: an entry must carry a string description and
-    an input_schema dict with a type and properties map. Anything failing this
-    is ignored for that tool and a degraded placeholder spec is used instead."""
+    """Pre-deref structural check: an entry must carry a string description and
+    an input_schema dict with a type and a properties map."""
     return (
         isinstance(entry, dict)
         and isinstance(entry.get("description"), str)
@@ -150,11 +170,24 @@ def _valid_spec_entry(entry: Any) -> bool:
     )
 
 
+def _valid_resolved_schema(schema: Any) -> bool:
+    """Post-deref check: the resolved input_schema is an object schema whose
+    every property carries a concrete JSON Schema ``type`` (a Claude Desktop
+    requirement — a bare ``$ref`` that failed to resolve would leave a property
+    without one). Empty properties are fine (some tools take no arguments)."""
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        return False
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        return False
+    return all(isinstance(p, dict) and "type" in p for p in props.values())
+
+
 def _degraded_spec(name: str, handler: ToolHandler) -> ToolSpec:
-    """Placeholder ToolSpec for when the JSON spec is unavailable or has no valid
-    entry for a tool. The tool stays callable (its handler is real) but the LLM
-    gets no parameter guidance — operators fix the spec file to restore full
-    schemas. Logged at load time so a degraded load is never silent."""
+    """Placeholder ToolSpec for when no valid spec has ever loaded — the tool
+    stays callable (its handler is real) but the LLM gets no parameter guidance.
+    Only used at startup before the first successful load; later reload failures
+    keep the last valid set instead."""
     return ToolSpec(
         name=name,
         description=f"Tool '{name}' — spec unavailable (tool_specs.json missing or invalid).",
@@ -167,17 +200,19 @@ class ToolRegistry:
     """Holds the tool map and serves metadata from an external spec file.
 
     Runtime knows only the handlers (``_build_handlers()`` — name → callable).
-    Each tool's description and input_schema come solely from the spec JSON: the
-    file is the single source of truth for metadata. The spec is hot-reloaded by
-    mtime — ``list_tools()`` stats the file and re-reads it only when it changed,
-    so edits go live on the next tools/list with no restart. A missing, corrupt,
-    or entry-less spec yields a degraded placeholder (tool still callable, no
-    param guidance) and a warning — the server never crashes over a bad spec.
+    Each tool's description and input_schema come solely from the spec JSON,
+    which is the single source of truth for metadata. The file may use a
+    top-level ``$defs`` block with ``$ref`` for shared parameter definitions;
+    the loader inlines every ``$ref`` before exposing schemas, so clients always
+    receive a fully-resolved inputSchema.
 
-    The Python-authored metadata in ``_build_tool_metadata()`` is NOT used at
-    runtime; it is the generator's input (``scripts/dump_tool_specs.py``) that
-    bakes the bundled JSON. Edit the JSON (or an override at
-    ``SIEBEL_TOOLS_SPEC_PATH``) to change what clients see.
+    The spec is hot-reloaded by mtime — ``list_tools()`` stats the file and
+    re-reads it only when it changed, so edits go live on the next tools/list
+    with no restart. Every reload re-runs the full pipeline (parse with duplicate
+    detection → deref → validate → handler↔spec coverage check) and only swaps in
+    the new set on success; on any failure the last valid set keeps serving and
+    the failure is logged. If the very first load fails (no last valid set), a
+    degraded placeholder is served so the server still starts.
     """
 
     def __init__(self, settings: AppSettings) -> None:
@@ -189,15 +224,62 @@ class ToolRegistry:
         self._tools: dict[str, ToolSpec] = {}
         self._reload_if_changed()
 
+    def _load_valid_tools(self) -> dict[str, ToolSpec]:
+        """Read, parse, deref, validate, and coverage-check the spec file. Returns
+        a fresh ``name → ToolSpec`` map on success; raises ``_SpecError`` on any
+        failure so the caller can keep the last valid set."""
+        try:
+            with open(self._spec_path, encoding="utf-8") as fh:
+                data = json.loads(fh.read(), object_pairs_hook=_no_dup_pairs)
+        except OSError as exc:
+            raise _SpecError(f"not readable: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise _SpecError(f"invalid JSON: {exc}") from exc
+        if not isinstance(data, dict) or not isinstance(data.get("tools"), dict):
+            raise _SpecError("missing 'tools' object")
+        defs = data.get("$defs", {})
+        if not isinstance(defs, dict):
+            raise _SpecError("'$defs' must be an object")
+        tools_data: dict[str, Any] = data["tools"]
+
+        # Handler↔spec coverage must be exact: every handler has a spec entry and
+        # there are no orphan entries. A mismatch rejects the whole reload so a
+        # half-edited spec never partially replaces a good one.
+        handler_names = set(self._handlers)
+        spec_names = set(tools_data)
+        missing = handler_names - spec_names
+        if missing:
+            raise _SpecError(f"handlers without a spec entry: {sorted(missing)}")
+        orphaned = spec_names - handler_names
+        if orphaned:
+            raise _SpecError(f"spec entries without a handler: {sorted(orphaned)}")
+
+        built: dict[str, ToolSpec] = {}
+        for name, entry in tools_data.items():
+            if not _valid_spec_entry(entry):
+                raise _SpecError(f"invalid entry for {name!r}")
+            try:
+                schema = _deref(entry["input_schema"], defs)
+            except _SpecError as exc:
+                raise _SpecError(f"$ref error in {name!r}: {exc}") from exc
+            if not _valid_resolved_schema(schema):
+                raise _SpecError(f"invalid resolved schema for {name!r}")
+            built[name] = ToolSpec(
+                name=name,
+                description=entry["description"],
+                input_schema=schema,
+                handler=self._handlers[name],
+            )
+        return built
+
     def _reload_if_changed(self) -> None:
-        """Re-read the spec file if its mtime changed since the last load, and
-        rebuild ``self._tools`` from the handler map + spec metadata."""
+        """Re-read the spec file if its mtime changed since the last load. On a
+        successful reload, swap in the new tool set; on failure, keep the last
+        valid set (or degrade if there isn't one yet)."""
         with self._lock:
             try:
                 mtime = os.stat(self._spec_path).st_mtime_ns
             except OSError:
-                # File gone missing. Keep serving the last good tools if we have
-                # them; otherwise degrade so the server still lists something.
                 if self._tools:
                     log.warning("Tool spec file unavailable: %s — keeping current tools", self._spec_path)
                 else:
@@ -207,41 +289,23 @@ class ToolRegistry:
                 return
             if mtime == self._spec_mtime:
                 return
-            self._spec_mtime = mtime
 
-            data = _load_spec(self._spec_path)
-            if data is None:
-                # Load failed. Keep last good tools if any; else degrade.
-                if not self._tools:
-                    log.warning("Serving degraded tool specs (spec at %s not usable)", self._spec_path)
+            try:
+                built = self._load_valid_tools()
+            except _SpecError as exc:
+                # Record this mtime so a broken file isn't re-read on every list
+                # call; it'll be retried when the file changes again.
+                self._spec_mtime = mtime
+                if self._tools:
+                    log.warning("Tool spec reload failed — keeping current tools (%s): %s", exc, self._spec_path)
+                else:
+                    log.warning("Tool spec load failed — serving degraded specs (%s): %s", exc, self._spec_path)
                     self._tools = {n: _degraded_spec(n, h) for n, h in self._handlers.items()}
                 return
 
-            built: dict[str, ToolSpec] = {}
-            degraded = 0
-            for name, handler in self._handlers.items():
-                entry = data.get(name)
-                if entry is not None and _valid_spec_entry(entry):
-                    built[name] = ToolSpec(
-                        name=name,
-                        description=entry["description"],
-                        input_schema=entry["input_schema"],
-                        handler=handler,
-                    )
-                else:
-                    built[name] = _degraded_spec(name, handler)
-                    degraded += 1
-            # Spec entries that name no real handler can't be called — warn and skip.
-            for orphan in (n for n in data if n not in self._handlers):
-                log.warning("Tool spec entry %r at %s has no matching handler — ignored", orphan, self._spec_path)
             self._tools = built
-            if degraded:
-                log.warning(
-                    "Loaded %d tool specs from %s (%d degraded — missing/invalid entry)",
-                    len(built), self._spec_path, degraded,
-                )
-            else:
-                log.info("Loaded %d tool specs from %s", len(built), self._spec_path)
+            self._spec_mtime = mtime
+            log.info("Loaded %d tool specs from %s", len(built), self._spec_path)
 
     def list_tools(self) -> list[dict[str, Any]]:
         self._reload_if_changed()
@@ -269,254 +333,45 @@ class ToolRegistry:
 
 
 def _build_handlers() -> dict[str, ToolHandler]:
-    """Runtime handler map (tool name → callable), projected from
-    ``_build_tool_metadata()``. The registry uses only this at runtime —
-    metadata (description/input_schema) comes from the spec JSON, never from
-    Python."""
-    return {name: spec.handler for name, spec in _build_tool_metadata().items()}
+    """Runtime handler map: tool name → callable.
 
-
-def _build_tool_metadata() -> dict[str, ToolSpec]:
-    """Authoring source for the bundled tool-spec JSON.
-
-    NOT used at runtime — ``ToolRegistry`` reads metadata from the spec file.
-    This is the input to ``scripts/dump_tool_specs.py``, which bakes each tool's
-    description and base input_schema (built via ``_schema()`` +
-    ``FIELD_DESCRIPTIONS``) into ``tool_specs.json``. Re-run the generator after
-    editing anything here; the bundled JSON is what clients see.
+    This is the ONLY tool information that lives in Python. Each tool's
+    description and input_schema are authored in the spec JSON
+    (``mcp_siebel/specs/tool_specs.json``, overridable via
+    ``SIEBEL_TOOLS_SPEC_PATH``) — edit that file to change what clients see; the
+    registry hot-reloads it. Adding a new tool means adding a handler here AND a
+    matching entry in the spec; the reload's coverage check rejects a spec that
+    doesn't match this set exactly.
     """
-    specs = [
-        ToolSpec(
-            "authenticate",
-            "Authenticate or register a Siebel user for this session.",
-            _schema("username", "password", required=("username", "password")),
-            _authenticate,
-        ),
-        ToolSpec(
-            "list_business_objects",
-            "List all available Siebel Business Objects.",
-            {"type": "object", "properties": {}},
-            _list_business_objects,
-        ),
-        ToolSpec(
-            "describe_business_object",
-            "Get field schema for a Siebel Business Object/Component.",
-            _schema("business_object", "business_component", required=("business_object",)),
-            _describe_business_object,
-        ),
-        ToolSpec(
-            "describe_business_object_json",
-            "REST data API field list for a BC as JSON — the navigator's result-list columns (reliable; no LOV types).",
-            _schema("business_object", "business_component", required=("business_object",)),
-            _describe_business_object_json,
-        ),
-        ToolSpec(
-            "describe_repository",
-            (
-                "Query Siebel repository metadata for the full field list of a Business Component. "
-                "Returns richer data than describe_business_object: pre/post default values, LOV "
-                "picklist types, calculated field flags, join info, and fields that are valid in "
-                "searchspec/sort_spec but not returned by the REST data API. Always call this when "
-                "you need fields not listed by describe_business_object, before create/update to "
-                "check required field defaults, or when unsure about a field name or picklist values."
-            ),
-            _schema("business_object", "business_component", required=("business_object",)),
-            _describe_repository,
-        ),
-        ToolSpec(
-            "list_business_objects_json",
-            "List all available Siebel Business Objects as structured JSON (for the CRM navigator).",
-            {"type": "object", "properties": {}},
-            _list_business_objects_json,
-        ),
-        ToolSpec(
-            "describe_repository_json",
-            "Field metadata for a BC as JSON (name, type, LOV type, flags) — for the navigator's filter chips.",
-            _schema("business_object", "business_component", required=("business_object",)),
-            _describe_repository_json,
-        ),
-        ToolSpec(
-            "query_data",
-            "Query Siebel CRM data using a Siebel searchspec expression.",
-            _schema(
-                "business_object",
-                "business_component",
-                "searchspec",
-                "fields",
-                "sort_spec",
-                "page_size",
-                "offset",
-                required=("business_object",),
-            ),
-            _query_data,
-        ),
-        ToolSpec(
-            "query_records_json",
-            "Query records and return structured JSON.",
-            _schema(
-                "business_object",
-                "business_component",
-                "searchspec",
-                "fields",
-                "sort_spec",
-                "page_size",
-                "offset",
-                "childlinks",
-                required=("business_object",),
-            ),
-            _query_records_json,
-        ),
-        ToolSpec(
-            "count_records",
-            "Count records matching an optional searchspec.",
-            _schema("business_object", "business_component", "searchspec", required=("business_object",)),
-            _count_records,
-        ),
-        ToolSpec(
-            "aggregate_data",
-            "Compute sum, avg, min, max, or count across all matching records.",
-            _schema(
-                "business_object",
-                "business_component",
-                "field",
-                "operation",
-                "searchspec",
-                required=("business_object", "field", "operation"),
-            ),
-            _aggregate_data,
-        ),
-        ToolSpec(
-            "get_record",
-            "Get a single Siebel record by Id.",
-            _schema("business_object", "business_component", "id", "fields", required=("business_object", "id")),
-            _get_record,
-        ),
-        ToolSpec(
-            "get_record_with_children",
-            "Get one record with embedded child records.",
-            _schema("business_object", "business_component", "id", required=("business_object", "id")),
-            _get_record_with_children,
-        ),
-        ToolSpec(
-            "create_record",
-            "Create a new Siebel record.",
-            _schema("business_object", "business_component", "data", required=("business_object", "data")),
-            _create_record,
-        ),
-        ToolSpec(
-            "create_record_json",
-            "Create a new Siebel record and return it as structured JSON (the new Id is in the result).",
-            _schema("business_object", "business_component", "data", required=("business_object", "data")),
-            _create_record_json,
-        ),
-        ToolSpec(
-            "update_record",
-            "Update an existing Siebel record by Id.",
-            _schema("business_object", "business_component", "id", "data", required=("business_object", "id", "data")),
-            _update_record,
-        ),
-        ToolSpec(
-            "delete_record",
-            "Delete a Siebel record by Id.",
-            _schema("business_object", "business_component", "id", required=("business_object", "id")),
-            _delete_record,
-        ),
-        ToolSpec(
-            "query_child_records",
-            "Query child records under a parent record.",
-            _schema(
-                "business_object",
-                "business_component",
-                "parent_id",
-                "child_business_component",
-                "searchspec",
-                "fields",
-                "sort_spec",
-                "page_size",
-                "offset",
-                required=("business_object", "parent_id", "child_business_component"),
-            ),
-            _query_child_records,
-        ),
-        ToolSpec(
-            "query_child_records_json",
-            "Query child records and return structured JSON.",
-            _schema(
-                "business_object",
-                "business_component",
-                "parent_id",
-                "child_business_component",
-                "searchspec",
-                "fields",
-                "sort_spec",
-                "page_size",
-                "offset",
-                required=("business_object", "parent_id", "child_business_component"),
-            ),
-            _query_child_records_json,
-        ),
-        ToolSpec(
-            "create_child_record",
-            "Create child record(s) under a parent record.",
-            _schema(
-                "business_object",
-                "business_component",
-                "parent_id",
-                "child_business_component",
-                "data",
-                required=("business_object", "parent_id", "child_business_component", "data"),
-            ),
-            _create_child_record,
-        ),
-        ToolSpec(
-            "upload_attachment",
-            "Upload a base64 file attachment to a Siebel record.",
-            _schema(
-                "business_object",
-                "business_component",
-                "parent_id",
-                "attachment_bc",
-                "file_name",
-                "file_ext",
-                "file_content_base64",
-                "comment",
-                required=(
-                    "business_object",
-                    "parent_id",
-                    "attachment_bc",
-                    "file_name",
-                    "file_ext",
-                    "file_content_base64",
-                ),
-            ),
-            _upload_attachment,
-        ),
-        ToolSpec(
-            "get_list_of_values",
-            "Fetch Siebel List of Values for LOV type codes.",
-            _schema("lov_types", required=("lov_types",)),
-            _get_list_of_values,
-        ),
-        ToolSpec(
-            "get_query_syntax",
-            "Return Siebel Query Language syntax reference.",
-            _schema("user_question", required=("user_question",)),
-            _get_query_syntax,
-        ),
-        ToolSpec(
-            "calculate_date",
-            "Resolve a natural-language date expression to MM/DD/YYYY.",
-            _schema("expression", required=("expression",)),
-            _calculate_date,
-        ),
-        ToolSpec(
-            "web_search",
-            "Search the web using Brave Search when configured.",
-            _schema("query", "count", required=("query",)),
-            _web_search,
-        ),
-    ]
-    return {spec.name: spec for spec in specs}
+    return {
+        "authenticate": _authenticate,
+        "list_business_objects": _list_business_objects,
+        "describe_business_object": _describe_business_object,
+        "describe_business_object_json": _describe_business_object_json,
+        "describe_repository": _describe_repository,
+        "list_business_objects_json": _list_business_objects_json,
+        "describe_repository_json": _describe_repository_json,
+        "query_data": _query_data,
+        "query_records_json": _query_records_json,
+        "count_records": _count_records,
+        "aggregate_data": _aggregate_data,
+        "get_record": _get_record,
+        "get_record_with_children": _get_record_with_children,
+        "create_record": _create_record,
+        "create_record_json": _create_record_json,
+        "update_record": _update_record,
+        "delete_record": _delete_record,
+        "query_child_records": _query_child_records,
+        "query_child_records_json": _query_child_records_json,
+        "create_child_record": _create_child_record,
+        "upload_attachment": _upload_attachment,
+        "get_list_of_values": _get_list_of_values,
+        "get_query_syntax": _get_query_syntax,
+        "calculate_date": _calculate_date,
+        "web_search": _web_search,
+    }
+
+
 
 
 async def _authenticate(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -1543,62 +1398,6 @@ def _error_result(exc: Exception, tool_name: str = "") -> dict[str, Any]:
     return _error("[INTERNAL - do not display verbatim] The Siebel operation could not be completed.")
 
 
-# Per-parameter descriptions surfaced to the LLM via the tool inputSchema.
-# Every Siebel tool argument is typed as JSON string (required by Claude
-# Desktop — see CLAUDE.md), but a bare `{"type":"string"}` gives the model no
-# clue what to put in `fields` / `child_business_component`, which is why it
-# emitted placeholder tokens like '<?>'. These descriptions guide it, and
-# `_schema(required=...)` marks the args a call is meaningless without so the
-# model is told up front instead of the tool crashing on `args["..."]`.
-FIELD_DESCRIPTIONS: dict[str, str] = {
-    "username": "Siebel user name.",
-    "password": "Siebel password.",
-    "business_object": (
-        "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. "
-        "Call list_business_objects to see all available names."
-    ),
-    "business_component": (
-        "Business Component within the Business Object. Defaults to the Business "
-        "Object name itself when omitted."
-    ),
-    "child_business_component": (
-        "Name of a Business Component that is linked as a CHILD of the parent "
-        "record under this Business Object — e.g. 'Contact' or 'Opportunity' "
-        "under 'Account'. Must be a real child relationship of this Business "
-        "Object, not an arbitrary Business Component."
-    ),
-    "parent_id": "Siebel row Id of the parent record, e.g. '1-5GZE'.",
-    "id": "Siebel row Id of the record, e.g. '1-5GZE'.",
-    "searchspec": (
-        "Optional Siebel search expression, e.g. \"[Name] LIKE 'A*'\" or "
-        "'[Id] = \"1-5GZE\"'. Omit to return all rows (paged)."
-    ),
-    "fields": (
-        "Comma-separated list of REAL Siebel field names to return, e.g. "
-        "'Name,Status'. Look the valid names up with describe_business_object "
-        "first. Omit to return the default field set. NEVER pass placeholders "
-        "such as '<?>'; if you are unsure of the field names, call "
-        "describe_business_object before querying."
-    ),
-    "sort_spec": "Optional sort expression, e.g. 'Name' or 'Created DESC'.",
-    "page_size": "Page size 1-100 as a string number, e.g. '20'. Default 20.",
-    "offset": "Zero-based row offset to start paging from, as a string number, e.g. '100'.",
-    "data": 'JSON object of field names to values for create/update, e.g. {"Name": "Acme"}.',
-    "operation": "Aggregation operation: one of 'sum', 'avg', 'min', 'max', 'count'.",
-    "field": "A real Siebel field name to aggregate over (from describe_business_object).",
-    "childlinks": "Comma-separated child Business Component names to expand inline in the response.",
-    "attachment_bc": "Business Component for the attachment, e.g. 'Account Attachment'.",
-    "file_name": "Attachment file name without extension.",
-    "file_ext": "Attachment file extension, e.g. 'pdf'.",
-    "file_content_base64": "Attachment file contents, base64-encoded.",
-    "comment": "Optional attachment comment.",
-    "lov_types": "Comma-separated Siebel LOV type codes, e.g. 'ACCOUNT_STATUS'.",
-    "user_question": "Natural-language question about Siebel query syntax.",
-    "expression": "Natural-language date expression, e.g. 'today', 'next Monday', 'end of month'.",
-    "query": "Web search query string.",
-    "count": "Number of web results to return, as a string number, e.g. '5'.",
-}
-
 # Tokens the LLM emits as placeholders when it doesn't know a real value.
 # Rejecting them up front (instead of forwarding to Siebel) avoids the
 # SBL-EAI-50258 "Invalid fields: '<?>'" round-trip and the broken-default
@@ -1625,20 +1424,3 @@ def _validate_fields_arg(raw: Any) -> str | None:
         "comma-separated — or omit 'fields' to use the default set. Do not guess and "
         "do not pass placeholders like '<?>'."
     )
-
-
-def _schema(*fields: str, required: tuple[str, ...] = ()) -> dict[str, Any]:
-    """Build a tool inputSchema. Every property keeps a concrete `type` (a
-    Claude-Desktop requirement), now paired with a model-facing description
-    and an optional `required` list so the LLM knows what it must supply."""
-    properties: dict[str, Any] = {}
-    for f in fields:
-        prop: dict[str, Any] = {"type": "string"}
-        desc = FIELD_DESCRIPTIONS.get(f)
-        if desc:
-            prop["description"] = desc
-        properties[f] = prop
-    schema: dict[str, Any] = {"type": "object", "properties": properties}
-    if required:
-        schema["required"] = list(required)
-    return schema
