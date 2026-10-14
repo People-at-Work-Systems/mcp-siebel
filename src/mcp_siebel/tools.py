@@ -76,11 +76,18 @@ class ToolSpec:
     description: str
     input_schema: dict[str, Any]
     handler: ToolHandler
+    # Access level declared in the spec: "read" tools are always available,
+    # "write" tools only when SIEBEL_ALLOW_WRITE is set, "delete" only when
+    # SIEBEL_ALLOW_DELETE is set. The registry enforces this gate (both for
+    # listing and for call) so adding a write tool via JSON can't bypass the
+    # read-only default. Authored in the spec, not hard-coded here.
+    access: str = "read"
     # True for tools the spec marks ``always_enabled`` — exempt from the
     # disabled-tools filter so a deployer can't brick the server by listing
     # them in SIEBEL_DISABLED_TOOLS (the auth-establishment tool is the one
     # that matters). Authored in the spec, not hard-coded here, so tools.py
-    # stays free of tool names.
+    # stays free of tool names. Load-time rule: always_enabled is only allowed
+    # with access "read" — it must never bypass the access gate.
     always_enabled: bool = False
 
 
@@ -186,9 +193,9 @@ def _deref(node: Any, defs: dict[str, Any], _stack: tuple[str, ...] = ()) -> Any
 
 def _valid_spec_entry(entry: Any) -> bool:
     """Pre-deref structural check: an entry must carry a string description, a
-    string ``kind``, a string ``handler`` reference, and an input_schema dict
-    with a type and a properties map. ``always_enabled`` is optional but, if
-    present, must be a bool."""
+    string ``kind``, a string ``handler`` reference, a valid ``access`` level,
+    and an input_schema dict with a type and a properties map.
+    ``always_enabled`` is optional but, if present, must be a bool."""
     return (
         isinstance(entry, dict)
         and isinstance(entry.get("description"), str)
@@ -197,6 +204,8 @@ def _valid_spec_entry(entry: Any) -> bool:
         and "type" in entry["input_schema"]
         and isinstance(entry.get("kind"), str)
         and isinstance(entry.get("handler"), str)
+        and isinstance(entry.get("access"), str)
+        and entry.get("access") in _ACCESS_LEVELS
         and ("always_enabled" not in entry or isinstance(entry["always_enabled"], bool))
     )
 
@@ -218,6 +227,10 @@ def _valid_resolved_schema(schema: Any) -> bool:
 # importlib from the spec's ``"handler"`` field. Future kinds (generic BC
 # query/upsert/delete + business-service executors) will be added here.
 _KNOWN_KINDS: set[str] = {"python"}
+
+# Access levels a spec entry may declare. ``read`` is always available;
+# ``write`` / ``delete`` are gated by SIEBEL_ALLOW_WRITE / SIEBEL_ALLOW_DELETE.
+_ACCESS_LEVELS: set[str] = {"read", "write", "delete"}
 
 # Handler references may only name modules inside this package — the resolver
 # rejects anything outside it so a spec can't pull in arbitrary code.
@@ -311,12 +324,23 @@ class ToolRegistry:
                 raise _SpecError(f"$ref error in {name!r}: {exc}") from exc
             if not _valid_resolved_schema(schema):
                 raise _SpecError(f"invalid resolved schema for {name!r}")
+            access = entry["access"]
+            always_enabled = bool(entry.get("always_enabled", False))
+            # always_enabled exempts a tool from SIEBEL_DISABLED_TOOLS only — it
+            # must never bypass the access gate, so it is only permitted on a
+            # read tool (the auth-establishment tool is the one that matters).
+            if always_enabled and access != "read":
+                raise _SpecError(
+                    f"always_enabled is only allowed with access 'read' "
+                    f"(entry {name!r} has access {access!r})"
+                )
             built[name] = ToolSpec(
                 name=name,
                 description=entry["description"],
                 input_schema=schema,
                 handler=handler,
-                always_enabled=bool(entry.get("always_enabled", False)),
+                access=access,
+                always_enabled=always_enabled,
             )
         return built
 
@@ -368,19 +392,35 @@ class ToolRegistry:
                     name,
                 )
 
+    def _access_enabled(self, tool: ToolSpec) -> bool:
+        """Whether ``tool``'s access level is currently permitted by the
+        SIEBEL_ALLOW_WRITE / SIEBEL_ALLOW_DELETE flags. ``read`` is always on;
+        ``write`` / ``delete`` are off by default (read-only server)."""
+        if tool.access == "write":
+            return bool(self.settings.allow_write)
+        if tool.access == "delete":
+            return bool(self.settings.allow_delete)
+        return True
+
     def list_tools(self) -> list[dict[str, Any]]:
         self._reload_if_changed()
         disabled = {name.lower() for name in self.settings.disabled_tools}
         return [
             {"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
             for tool in self._tools.values()
-            if tool.always_enabled or tool.name.lower() not in disabled
+            if self._access_enabled(tool)
+            and (tool.always_enabled or tool.name.lower() not in disabled)
         ]
 
     async def call(self, name: str, arguments: dict[str, Any], session: SessionContext | None) -> dict[str, Any]:
         tool = self._tools.get(name)
         if tool is None:
             return _error(f'Unknown tool "{name}".')
+        # The access gate takes precedence: a write/delete tool is refused when
+        # its flag is off, regardless of always_enabled (which only exempts the
+        # SIEBEL_DISABLED_TOOLS list, never the access gate).
+        if not self._access_enabled(tool):
+            return _error(f'Tool "{name}" is disabled (requires allow_write/allow_delete).')
         if not tool.always_enabled and name.lower() in {item.lower() for item in self.settings.disabled_tools}:
             return _error(f'Tool "{name}" is disabled.')
         log.debug("Calling tool %s with args %s", name, list(arguments.keys()))

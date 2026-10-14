@@ -1,17 +1,23 @@
-"""Read-only by default: write/delete tools are gated by SIEBEL_ALLOW_WRITE /
-SIEBEL_ALLOW_DELETE, both default off. See config.AppSettings.WRITE_TOOLS /
-DELETE_TOOLS and the disabled_tools property.
+"""Read-only by default: write/delete tools are gated by their ``access`` level
+in the spec (``"write"`` / ``"delete"``) plus SIEBEL_ALLOW_WRITE /
+SIEBEL_ALLOW_DELETE in ToolRegistry. ``disabled_tools`` now returns ONLY the
+explicit SIEBEL_DISABLED_TOOLS list — access gating lives in the registry, not
+in config. See tool_specs.json (per-entry ``access``) and ToolRegistry.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+from copy import deepcopy
+from importlib.resources import files
 
 import pytest
 
 from mcp_siebel.config import AppSettings
 from mcp_siebel.tools import SessionContext, ToolRegistry
 
+# The write/delete tool sets, as declared by ``access`` in the bundled spec.
 WRITE_TOOLS = {
     "create_record",
     "create_record_json",
@@ -26,53 +32,43 @@ def _names(reg: ToolRegistry) -> set[str]:
     return {t["name"] for t in reg.list_tools()}
 
 
-def _disabled_lower(settings: AppSettings) -> set[str]:
-    return {d.lower() for d in settings.disabled_tools}
+def _bundled_spec() -> dict[str, object]:
+    return json.loads(files("mcp_siebel").joinpath("specs", "tool_specs.json").read_text(encoding="utf-8"))
 
 
-# --- disabled_tools property (the choke point) -----------------------------
+def _registry_with_extra(tmp_path, extra: dict[str, dict[str, object]], **settings_overrides) -> ToolRegistry:
+    """Registry backed by the bundled spec plus ``extra`` tool entries — proves a
+    tool added via JSON alone is gated by its ``access`` with no code change."""
+    spec = deepcopy(_bundled_spec())
+    spec["tools"].update(extra)  # type: ignore[union-attr]
+    path = tmp_path / "spec.json"
+    path.write_text(json.dumps(spec, indent=2), encoding="utf-8")
+    settings = AppSettings(**settings_overrides)
+    settings.tools_spec_path = str(path)
+    return ToolRegistry(settings)
 
 
-def test_property_gates_write_and_delete_by_default() -> None:
-    s = AppSettings()
-    disabled = _disabled_lower(s)
-    assert {w.lower() for w in WRITE_TOOLS} <= disabled
-    assert DELETE_TOOLS <= disabled
-    # read tools are NOT auto-gated
-    assert "query_data" not in disabled
-    assert "list_business_objects" not in disabled
+# --- disabled_tools property: explicit SIEBEL_DISABLED_TOOLS only -----------
+#
+# Access gating (read/write/delete) moved into ToolRegistry; the property no
+# longer auto-appends write/delete tools.
 
 
-def test_property_allow_write_ungates_write_only() -> None:
-    s = AppSettings(allow_write=True)
-    disabled = _disabled_lower(s)
-    assert not ({w.lower() for w in WRITE_TOOLS} & disabled)
-    assert DELETE_TOOLS <= disabled  # delete still gated
+def test_disabled_tools_empty_by_default() -> None:
+    assert AppSettings().disabled_tools == []  # nothing auto-gated
 
 
-def test_property_allow_delete_ungates_delete_only() -> None:
-    s = AppSettings(allow_delete=True)
-    disabled = _disabled_lower(s)
-    assert not (DELETE_TOOLS & disabled)
-    assert {w.lower() for w in WRITE_TOOLS} <= disabled  # write still gated
-
-
-def test_property_both_flags_ungate_everything() -> None:
-    s = AppSettings(allow_write=True, allow_delete=True)
-    disabled = _disabled_lower(s)
-    assert not ({w.lower() for w in WRITE_TOOLS} | DELETE_TOOLS) & disabled
-
-
-def test_property_explicit_disabled_tools_unioned_with_gates() -> None:
+def test_disabled_tools_returns_only_explicit_list() -> None:
     s = AppSettings()
     s.disabled_tools_raw = "query_data, get_record"
-    disabled = _disabled_lower(s)
-    # gated write/delete still present
-    assert "create_record" in disabled and "delete_record" in disabled
-    # explicit additions present too
-    assert "query_data" in disabled and "get_record" in disabled
-    # a read tool not explicitly disabled is not gated
-    assert "list_business_objects" not in disabled
+    assert s.disabled_tools == ["query_data", "get_record"]
+
+
+def test_disabled_tools_unaffected_by_access_flags() -> None:
+    # allow_write/allow_delete gate at the registry (by `access`), not here.
+    s = AppSettings(allow_write=True, allow_delete=True)
+    s.disabled_tools_raw = "query_data"
+    assert s.disabled_tools == ["query_data"]
 
 
 # --- ToolRegistry integration ---------------------------------------------
@@ -171,3 +167,55 @@ def test_normal_tool_alongside_always_enabled_is_still_disabled() -> None:
     names = _names(reg)
     assert "query_data" not in names
     assert "authenticate" in names
+
+
+# --- spec-driven access gating (access level lives in the spec) -------------
+#
+# A tool's ``access`` ("read"|"write"|"delete") is the single source of truth
+# for gating. A write tool added via JSON alone is hidden/refused when
+# allow_write is off — no framework code change is needed.
+
+
+_BULK_CREATE: dict[str, object] = {
+    "description": "A NEW write tool added via the spec only.",
+    "kind": "python",
+    "handler": "mcp_siebel.handlers.records:_create_record",
+    "access": "write",
+    "input_schema": {
+        "type": "object",
+        "properties": {"business_object": {"type": "string"}},
+        "required": ["business_object"],
+    },
+}
+
+
+def test_new_write_tool_is_gated_by_default(tmp_path) -> None:
+    """A write tool added via JSON is hidden when allow_write is off — no code
+    change needed beyond the spec entry."""
+    reg = _registry_with_extra(tmp_path, {"bulk_create": _BULK_CREATE})
+    assert "bulk_create" not in _names(reg)
+
+
+def test_new_write_tool_enabled_by_allow_write(tmp_path) -> None:
+    reg = _registry_with_extra(tmp_path, {"bulk_create": _BULK_CREATE}, allow_write=True)
+    assert "bulk_create" in _names(reg)
+
+
+@pytest.mark.asyncio
+async def test_new_write_tool_call_refused_when_gated(tmp_path) -> None:
+    reg = _registry_with_extra(tmp_path, {"bulk_create": _BULK_CREATE})
+    result = await reg.call("bulk_create", {"business_object": "Account"}, None)
+    assert result.get("isError")
+    text = " ".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
+    assert "disabled" in text.lower()
+
+
+# --- always_enabled is only allowed with access "read" ----------------------
+
+
+def test_always_enabled_with_write_access_rejected_at_load(tmp_path) -> None:
+    """An entry that is both always_enabled and access "write" is rejected at
+    load time — always_enabled must never bypass the access gate."""
+    bad = {**_BULK_CREATE, "always_enabled": True}
+    reg = _registry_with_extra(tmp_path, {"always_write": bad})
+    assert reg._tools == {}  # load rejected

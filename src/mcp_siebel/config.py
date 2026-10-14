@@ -5,17 +5,6 @@ from __future__ import annotations
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Tools gated behind SIEBEL_ALLOW_WRITE / SIEBEL_ALLOW_DELETE (both default off,
-# so the server is read-only by default). See AppSettings.disabled_tools.
-WRITE_TOOLS: tuple[str, ...] = (
-    "create_record",
-    "create_record_json",
-    "update_record",
-    "create_child_record",
-    "upload_attachment",
-)
-DELETE_TOOLS: tuple[str, ...] = ("delete_record",)
-
 
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -64,8 +53,9 @@ class AppSettings(BaseSettings):
     demo_enabled: bool = False
 
     # -- Access gates (default off = read-only) -------------------------------
-    # When False, the corresponding tools are auto-added to disabled_tools and
-    # therefore unlisted by ToolRegistry.list_tools() and refused by call().
+    # When False, tools whose spec entry has access "write" / "delete" are
+    # hidden by ToolRegistry.list_tools() and refused by call(). The per-tool
+    # access level lives in the spec; these flags are the on/off switch.
     allow_write: bool = False
     allow_delete: bool = False
 
@@ -89,19 +79,14 @@ class AppSettings(BaseSettings):
 
     @property
     def disabled_tools(self) -> list[str]:
-        """Explicit SIEBEL_DISABLED_TOOLS list plus the access-gate defaults.
+        """The explicit SIEBEL_DISABLED_TOOLS list only.
 
-        When allow_write / allow_delete are False (the default, read-only mode),
-        the write tools and delete_record are appended here so the existing
-        ToolRegistry filter (which reads this property) hides and refuses them.
+        Access gating (write/delete) is enforced by ToolRegistry from each
+        spec entry's ``access`` field against allow_write/allow_delete — it no
+        longer lives here, so a write tool added via JSON can't bypass the
+        read-only default. always_enabled tools are exempt from this list.
         """
-        explicit = [t.strip() for t in self.disabled_tools_raw.split(",") if t.strip()]
-        gated: list[str] = []
-        if not self.allow_write:
-            gated.extend(WRITE_TOOLS)
-        if not self.allow_delete:
-            gated.extend(DELETE_TOOLS)
-        return explicit + gated
+        return [t.strip() for t in self.disabled_tools_raw.split(",") if t.strip()]
 
     # -- OAuth ----------------------------------------------------------------
     oauth_client_id: str = ""

@@ -41,14 +41,21 @@ def _entry(
     *,
     kind: str = "python",
     handler: str = "mcp_siebel.handlers.records:_query_data",
+    access: str = "read",
 ) -> dict[str, object]:
     """A minimal valid spec entry. The default handler points at a real,
     resolvable function so an entry is valid out of the box; tests that need a
-    bad kind/handler override those kwargs."""
+    bad kind/handler or a non-read access level override those kwargs."""
     schema: dict[str, object] = {"type": "object", "properties": props or {}}
     if required:
         schema["required"] = required
-    return {"description": description, "kind": kind, "handler": handler, "input_schema": schema}
+    return {
+        "description": description,
+        "kind": kind,
+        "handler": handler,
+        "access": access,
+        "input_schema": schema,
+    }
 
 
 def _write_spec(path, tools: dict[str, object], defs: dict[str, object] | None = None) -> None:
