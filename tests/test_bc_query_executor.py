@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from mcp_siebel.config import AppSettings
-from mcp_siebel.siebel_client import SiebelQueryResult
+from mcp_siebel.siebel_client import SiebelError, SiebelQueryResult
 from mcp_siebel.tools import SessionContext, ToolRegistry, _SpecError
 
 
@@ -267,3 +267,34 @@ async def test_bc_query_count_forces_page_size_one(tmp_path) -> None:
     resp = await reg.call("acct_count", {"searchspec": "[Name] LIKE 'A*'"}, session)
     assert resp["content"][0]["text"] == "Total records: **7**"
     assert client.query.call_args.kwargs["page_size"] == 1
+
+
+@pytest.mark.asyncio
+async def test_bc_query_count_404_empty_reflects_forced_page_size(tmp_path) -> None:
+    """A count tool's 404 -> empty result must carry the forced page_size=1
+    (and offset=0), matching the old _count_records which set page_size=1 before
+    the empty fallback — not the default 20 _empty_result would otherwise use."""
+    reg = _reg(
+        tmp_path,
+        {
+            "acct_count_json": _bcq(
+                result="count",
+                render="query_json",
+                bind={"business_object": "Account", "business_component": "Account"},
+                props={"searchspec": {"type": "string"}},
+            )
+        },
+    )
+    client = AsyncMock()
+    client.query = AsyncMock(side_effect=SiebelError("not found", 404, '{"ERROR":"404"}'))
+    cache = AsyncMock()
+    cache.resolve_business_object = AsyncMock(return_value="Account")
+    session = SessionContext(session_id="s1", username="t", client=client, cache=cache)
+
+    resp = await reg.call("acct_count_json", {"searchspec": "[Name] LIKE 'A*'"}, session)
+    assert resp.get("isError") is not True
+    payload = json.loads(resp["content"][0]["text"])
+    assert payload["items"] == []
+    assert payload["totalCount"] == 0
+    assert payload["pageSize"] == 1  # the count path's forced page_size, not 20
+    assert payload["offset"] == 0

@@ -216,7 +216,13 @@ async def execute_bc_query(args: dict[str, Any], ctx: ToolContext, options: dict
             )
     except SiebelError as exc:
         if exc.status_code == 404:
-            return RENDERERS[render](_empty_result(effective))
+            # The empty result must reflect the page_size/offset actually used
+            # (the count path forces page_size=1); _empty_result reads them
+            # from its arg, so override with the computed values.
+            empty = _empty_result(effective)
+            empty["pageSize"] = page_size
+            empty["offset"] = offset
+            return RENDERERS[render](empty)
         # The field-error retry is a root-scope behaviour only (the child path
         # never retried), and only when the caller actually named fields.
         if scope == "root" and _is_field_error(exc) and fields:
