@@ -84,37 +84,10 @@ def _load_instructions() -> str:
 
 _INSTRUCTIONS = _load_instructions()
 
-# Property types that are not plain strings
-_PROP_TYPES: dict[str, dict[str, Any]] = {
-    "page_size":    {"type": "integer", "description": "Number of records per page (default 20)"},
-    "offset":       {"type": "integer", "description": "Zero-based record offset for pagination"},
-    "count":        {"type": "integer", "description": "Number of results to return"},
-    "data":         {"type": "object",  "description": "Field/value pairs for create or update"},
-    "fields":       {"type": "array", "items": {"type": "string"}, "description": "Field names to include"},
-    "childlinks":   {
-        "type": "array",
-        "items": {"type": "string"},
-        "description": "Child business component names to include",
-    },
-    "lov_types":    {"type": "array", "items": {"type": "string"}, "description": "LOV type codes"},
-}
-
-_DEFAULT_PROP: dict[str, Any] = {"type": "string"}
-
-
-def _enrich_schema(raw: dict[str, Any]) -> dict[str, Any]:
-    """Add type annotations to bare property schemas."""
-    props = raw.get("properties", {})
-    enriched = {
-        name: _PROP_TYPES.get(name, _DEFAULT_PROP)
-        for name in props
-    }
-    schema: dict[str, Any] = {"type": "object", "properties": enriched}
-    if "required" in raw:
-        schema["required"] = raw["required"]
-    return schema
-
-
+# Injected onto every non-authenticate tool's schema at list time. The spec JSON
+# is the source of truth for each tool's own schema (types included); session_id
+# is transport-specific to stdio (the client passes it as a tool argument), so it
+# stays here rather than in the spec file.
 _SESSION_ID_PROP: dict[str, Any] = {
     "type": "string",
     "description": "Session ID returned by the authenticate tool. Required for every tool call except authenticate.",
@@ -126,9 +99,14 @@ async def _list_tools(
 ) -> ListToolsResult:
     tools = []
     for t in registry.list_tools():
-        schema = _enrich_schema(t["input_schema"])
+        # The registry already serves the final, typed input_schema from the
+        # spec JSON (hot-reloaded by mtime). Copy it so the session_id injection
+        # below never mutates the cached schema dict in the registry.
+        schema = {k: (v.copy() if isinstance(v, dict) else v) for k, v in t["input_schema"].items()}
+        props = dict(schema.get("properties", {}))
         if t["name"] != "authenticate":
-            schema["properties"]["session_id"] = _SESSION_ID_PROP
+            props["session_id"] = _SESSION_ID_PROP
+        schema["properties"] = props
         tools.append(Tool(name=t["name"], description=t["description"], input_schema=schema))
     return ListToolsResult(tools=tools)
 

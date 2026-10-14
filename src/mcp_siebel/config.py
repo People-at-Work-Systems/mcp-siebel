@@ -81,6 +81,12 @@ class AppSettings(BaseSettings):
     # Use the disabled_tools property to get the parsed list.
     disabled_tools_raw: str = Field(default="", alias="SIEBEL_DISABLED_TOOLS")
 
+    # Path to an external tool-spec JSON file (name/description/inputSchema per
+    # tool). Empty = use the bundled mcp_siebel/specs/tool_specs.json. The
+    # registry hot-reloads this file by mtime, so edits take effect on the next
+    # tools/list with no restart. Mirrors SIEBEL_SYSTEM_PROMPT_PATH.
+    tools_spec_path: str = Field(default="", alias="SIEBEL_TOOLS_SPEC_PATH")
+
     @property
     def disabled_tools(self) -> list[str]:
         """Explicit SIEBEL_DISABLED_TOOLS list plus the access-gate defaults.

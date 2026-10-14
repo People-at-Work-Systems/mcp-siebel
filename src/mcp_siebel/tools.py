@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from importlib.resources import files
 from typing import Any
 
 import httpx
@@ -17,6 +21,10 @@ from .schema_cache import SchemaCache
 from .siebel_client import SiebelClient, SiebelError, SiebelRecord
 
 log = logging.getLogger("mcp-siebel")
+
+# Bundled default tool-spec file (name/description/inputSchema per tool). The
+# registry reads this — or an override at SIEBEL_TOOLS_SPEC_PATH — and hot-
+# reloads it by mtime. See _load_spec / ToolRegistry._reload_if_changed.
 
 
 ToolHandler = Callable[[dict[str, Any], "ToolContext"], Awaitable[dict[str, Any]]]
@@ -97,12 +105,116 @@ class SessionStore:
         return len(self._sessions)
 
 
+def _resolve_spec_path(settings: AppSettings) -> str:
+    """Resolve the tool-spec file path: the SIEBEL_TOOLS_SPEC_PATH override if
+    set, else the bundled ``mcp_siebel/specs/tool_specs.json`` (located via
+    importlib.resources so it works under an installed wheel too)."""
+    override = (settings.tools_spec_path or "").strip()
+    if override:
+        return override
+    return str(files("mcp_siebel") / "specs" / "tool_specs.json")
+
+
+def _load_spec(path: str) -> dict[str, Any] | None:
+    """Read and parse the tool-spec JSON at ``path``.
+
+    Returns the parsed object (tool name → entry) on success, or ``None`` on any
+    read/parse error so the caller can fall back to the built-in metadata
+    instead of crashing the server over a bad spec file.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except OSError as exc:
+        log.warning("Tool spec file not readable at %s: %s — using built-in metadata", path, exc)
+        return None
+    except json.JSONDecodeError as exc:
+        log.warning("Tool spec file is not valid JSON at %s: %s — using built-in metadata", path, exc)
+        return None
+    if not isinstance(data, dict):
+        log.warning("Tool spec file at %s must be a JSON object keyed by tool name — using built-in metadata", path)
+        return None
+    return data
+
+
+def _valid_spec_entry(entry: Any) -> bool:
+    """Light per-entry validation: an entry must carry a string description and
+    an input_schema dict with a type and properties map. Anything failing this
+    is ignored for that tool and the built-in metadata is kept instead."""
+    return (
+        isinstance(entry, dict)
+        and isinstance(entry.get("description"), str)
+        and isinstance(entry.get("input_schema"), dict)
+        and isinstance(entry["input_schema"].get("properties"), dict)
+        and "type" in entry["input_schema"]
+    )
+
+
 class ToolRegistry:
+    """Holds the tool map and serves metadata from an external spec file.
+
+    Handlers (the Python callables that talk to Siebel) always come from
+    ``_build_tools()``. Each tool's description and input_schema come from the
+    spec JSON when it has a valid entry for that tool, else from the built-in
+    ``ToolSpec``. The spec file is hot-reloaded by mtime: ``list_tools()`` stats
+    the file and re-reads it only when it changed, so edits go live on the next
+    tools/list with no restart. A missing or corrupt spec file is logged and
+    silently falls back to the built-in metadata — the server never crashes over
+    a bad spec.
+    """
+
     def __init__(self, settings: AppSettings) -> None:
         self.settings = settings
+        self._spec_path = _resolve_spec_path(settings)
+        self._spec_mtime: float | None = None
+        self._lock = threading.Lock()
+        # _build_tools() is the source of handlers AND the fallback metadata.
         self._tools = _build_tools()
+        self._reload_if_changed()
+
+    def _reload_if_changed(self) -> None:
+        """Re-read the spec file if its mtime changed since the last load, and
+        rebuild ``self._tools`` from the handler map overlaid with spec metadata."""
+        with self._lock:
+            try:
+                mtime = os.stat(self._spec_path).st_mtime_ns
+            except OSError:
+                # Override path gone missing (or bundled file absent in a broken
+                # install): keep whatever we have and stop probing until it reappears.
+                if self._spec_mtime is not None:
+                    log.warning("Tool spec file disappeared: %s — keeping current tools", self._spec_path)
+                    self._spec_mtime = None
+                return
+            if mtime == self._spec_mtime:
+                return
+            self._spec_mtime = mtime
+
+            data = _load_spec(self._spec_path)
+            if data is None:
+                return  # error already logged; keep current _tools
+
+            handlers = _build_tools()
+            built: dict[str, ToolSpec] = {}
+            for name, base in handlers.items():
+                entry = data.get(name)
+                if entry is not None and _valid_spec_entry(entry):
+                    built[name] = ToolSpec(
+                        name=name,
+                        description=entry["description"],
+                        input_schema=entry["input_schema"],
+                        handler=base.handler,
+                    )
+                else:
+                    built[name] = base  # no/invalid spec entry → built-in metadata
+            # Spec entries that name no real handler can't be called — warn and skip.
+            orphaned = [n for n in data if n not in handlers]
+            for name in orphaned:
+                log.warning("Tool spec entry %r at %s has no matching handler — ignored", name, self._spec_path)
+            self._tools = built
+            log.info("Loaded %d tool specs from %s", len(built), self._spec_path)
 
     def list_tools(self) -> list[dict[str, Any]]:
+        self._reload_if_changed()
         disabled = {name.lower() for name in self.settings.disabled_tools}
         return [
             {"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}

@@ -1,0 +1,668 @@
+{
+  "aggregate_data": {
+    "description": "Compute sum, avg, min, max, or count across all matching records.",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        },
+        "field": {
+          "description": "A real Siebel field name to aggregate over (from describe_business_object).",
+          "type": "string"
+        },
+        "operation": {
+          "description": "Aggregation operation: one of 'sum', 'avg', 'min', 'max', 'count'.",
+          "type": "string"
+        },
+        "searchspec": {
+          "description": "Optional Siebel search expression, e.g. \"[Name] LIKE 'A*'\" or '[Id] = \"1-5GZE\"'. Omit to return all rows (paged).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_object",
+        "field",
+        "operation"
+      ],
+      "type": "object"
+    }
+  },
+  "authenticate": {
+    "description": "Authenticate or register a Siebel user for this session.",
+    "input_schema": {
+      "properties": {
+        "password": {
+          "description": "Siebel password.",
+          "type": "string"
+        },
+        "username": {
+          "description": "Siebel user name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "username",
+        "password"
+      ],
+      "type": "object"
+    }
+  },
+  "calculate_date": {
+    "description": "Resolve a natural-language date expression to MM/DD/YYYY.",
+    "input_schema": {
+      "properties": {
+        "expression": {
+          "description": "Natural-language date expression, e.g. 'today', 'next Monday', 'end of month'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "expression"
+      ],
+      "type": "object"
+    }
+  },
+  "count_records": {
+    "description": "Count records matching an optional searchspec.",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        },
+        "searchspec": {
+          "description": "Optional Siebel search expression, e.g. \"[Name] LIKE 'A*'\" or '[Id] = \"1-5GZE\"'. Omit to return all rows (paged).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_object"
+      ],
+      "type": "object"
+    }
+  },
+  "create_child_record": {
+    "description": "Create child record(s) under a parent record.",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        },
+        "child_business_component": {
+          "description": "Name of a Business Component that is linked as a CHILD of the parent record under this Business Object \u2014 e.g. 'Contact' or 'Opportunity' under 'Account'. Must be a real child relationship of this Business Object, not an arbitrary Business Component.",
+          "type": "string"
+        },
+        "data": {
+          "description": "JSON object of field names to values for create/update, e.g. {\"Name\": \"Acme\"}.",
+          "type": "object"
+        },
+        "parent_id": {
+          "description": "Siebel row Id of the parent record, e.g. '1-5GZE'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_object",
+        "parent_id",
+        "child_business_component",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  "create_record": {
+    "description": "Create a new Siebel record.",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        },
+        "data": {
+          "description": "JSON object of field names to values for create/update, e.g. {\"Name\": \"Acme\"}.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "business_object",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  "create_record_json": {
+    "description": "Create a new Siebel record and return it as structured JSON (the new Id is in the result).",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        },
+        "data": {
+          "description": "JSON object of field names to values for create/update, e.g. {\"Name\": \"Acme\"}.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "business_object",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  "delete_record": {
+    "description": "Delete a Siebel record by Id.",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Siebel row Id of the record, e.g. '1-5GZE'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_object",
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  "describe_business_object": {
+    "description": "Get field schema for a Siebel Business Object/Component.",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_object"
+      ],
+      "type": "object"
+    }
+  },
+  "describe_business_object_json": {
+    "description": "REST data API field list for a BC as JSON \u2014 the navigator's result-list columns (reliable; no LOV types).",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_object"
+      ],
+      "type": "object"
+    }
+  },
+  "describe_repository": {
+    "description": "Query Siebel repository metadata for the full field list of a Business Component. Returns richer data than describe_business_object: pre/post default values, LOV picklist types, calculated field flags, join info, and fields that are valid in searchspec/sort_spec but not returned by the REST data API. Always call this when you need fields not listed by describe_business_object, before create/update to check required field defaults, or when unsure about a field name or picklist values.",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_object"
+      ],
+      "type": "object"
+    }
+  },
+  "describe_repository_json": {
+    "description": "Field metadata for a BC as JSON (name, type, LOV type, flags) \u2014 for the navigator's filter chips.",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_object"
+      ],
+      "type": "object"
+    }
+  },
+  "get_list_of_values": {
+    "description": "Fetch Siebel List of Values for LOV type codes.",
+    "input_schema": {
+      "properties": {
+        "lov_types": {
+          "description": "Comma-separated Siebel LOV type codes, e.g. 'ACCOUNT_STATUS'.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "lov_types"
+      ],
+      "type": "object"
+    }
+  },
+  "get_query_syntax": {
+    "description": "Return Siebel Query Language syntax reference.",
+    "input_schema": {
+      "properties": {
+        "user_question": {
+          "description": "Natural-language question about Siebel query syntax.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_question"
+      ],
+      "type": "object"
+    }
+  },
+  "get_record": {
+    "description": "Get a single Siebel record by Id.",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        },
+        "fields": {
+          "description": "Comma-separated list of REAL Siebel field names to return, e.g. 'Name,Status'. Look the valid names up with describe_business_object first. Omit to return the default field set. NEVER pass placeholders such as '<?>'; if you are unsure of the field names, call describe_business_object before querying.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "Siebel row Id of the record, e.g. '1-5GZE'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_object",
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  "get_record_with_children": {
+    "description": "Get one record with embedded child records.",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Siebel row Id of the record, e.g. '1-5GZE'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_object",
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  "list_business_objects": {
+    "description": "List all available Siebel Business Objects.",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    }
+  },
+  "list_business_objects_json": {
+    "description": "List all available Siebel Business Objects as structured JSON (for the CRM navigator).",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    }
+  },
+  "query_child_records": {
+    "description": "Query child records under a parent record.",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        },
+        "child_business_component": {
+          "description": "Name of a Business Component that is linked as a CHILD of the parent record under this Business Object \u2014 e.g. 'Contact' or 'Opportunity' under 'Account'. Must be a real child relationship of this Business Object, not an arbitrary Business Component.",
+          "type": "string"
+        },
+        "fields": {
+          "description": "Comma-separated list of REAL Siebel field names to return, e.g. 'Name,Status'. Look the valid names up with describe_business_object first. Omit to return the default field set. NEVER pass placeholders such as '<?>'; if you are unsure of the field names, call describe_business_object before querying.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "offset": {
+          "description": "Zero-based row offset to start paging from, as a string number, e.g. '100'.",
+          "type": "integer"
+        },
+        "page_size": {
+          "description": "Page size 1-100 as a string number, e.g. '20'. Default 20.",
+          "type": "integer"
+        },
+        "parent_id": {
+          "description": "Siebel row Id of the parent record, e.g. '1-5GZE'.",
+          "type": "string"
+        },
+        "searchspec": {
+          "description": "Optional Siebel search expression, e.g. \"[Name] LIKE 'A*'\" or '[Id] = \"1-5GZE\"'. Omit to return all rows (paged).",
+          "type": "string"
+        },
+        "sort_spec": {
+          "description": "Optional sort expression, e.g. 'Name' or 'Created DESC'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_object",
+        "parent_id",
+        "child_business_component"
+      ],
+      "type": "object"
+    }
+  },
+  "query_child_records_json": {
+    "description": "Query child records and return structured JSON.",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        },
+        "child_business_component": {
+          "description": "Name of a Business Component that is linked as a CHILD of the parent record under this Business Object \u2014 e.g. 'Contact' or 'Opportunity' under 'Account'. Must be a real child relationship of this Business Object, not an arbitrary Business Component.",
+          "type": "string"
+        },
+        "fields": {
+          "description": "Comma-separated list of REAL Siebel field names to return, e.g. 'Name,Status'. Look the valid names up with describe_business_object first. Omit to return the default field set. NEVER pass placeholders such as '<?>'; if you are unsure of the field names, call describe_business_object before querying.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "offset": {
+          "description": "Zero-based row offset to start paging from, as a string number, e.g. '100'.",
+          "type": "integer"
+        },
+        "page_size": {
+          "description": "Page size 1-100 as a string number, e.g. '20'. Default 20.",
+          "type": "integer"
+        },
+        "parent_id": {
+          "description": "Siebel row Id of the parent record, e.g. '1-5GZE'.",
+          "type": "string"
+        },
+        "searchspec": {
+          "description": "Optional Siebel search expression, e.g. \"[Name] LIKE 'A*'\" or '[Id] = \"1-5GZE\"'. Omit to return all rows (paged).",
+          "type": "string"
+        },
+        "sort_spec": {
+          "description": "Optional sort expression, e.g. 'Name' or 'Created DESC'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_object",
+        "parent_id",
+        "child_business_component"
+      ],
+      "type": "object"
+    }
+  },
+  "query_data": {
+    "description": "Query Siebel CRM data using a Siebel searchspec expression.",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        },
+        "fields": {
+          "description": "Comma-separated list of REAL Siebel field names to return, e.g. 'Name,Status'. Look the valid names up with describe_business_object first. Omit to return the default field set. NEVER pass placeholders such as '<?>'; if you are unsure of the field names, call describe_business_object before querying.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "offset": {
+          "description": "Zero-based row offset to start paging from, as a string number, e.g. '100'.",
+          "type": "integer"
+        },
+        "page_size": {
+          "description": "Page size 1-100 as a string number, e.g. '20'. Default 20.",
+          "type": "integer"
+        },
+        "searchspec": {
+          "description": "Optional Siebel search expression, e.g. \"[Name] LIKE 'A*'\" or '[Id] = \"1-5GZE\"'. Omit to return all rows (paged).",
+          "type": "string"
+        },
+        "sort_spec": {
+          "description": "Optional sort expression, e.g. 'Name' or 'Created DESC'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_object"
+      ],
+      "type": "object"
+    }
+  },
+  "query_records_json": {
+    "description": "Query records and return structured JSON.",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        },
+        "childlinks": {
+          "description": "Comma-separated child Business Component names to expand inline in the response.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "fields": {
+          "description": "Comma-separated list of REAL Siebel field names to return, e.g. 'Name,Status'. Look the valid names up with describe_business_object first. Omit to return the default field set. NEVER pass placeholders such as '<?>'; if you are unsure of the field names, call describe_business_object before querying.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "offset": {
+          "description": "Zero-based row offset to start paging from, as a string number, e.g. '100'.",
+          "type": "integer"
+        },
+        "page_size": {
+          "description": "Page size 1-100 as a string number, e.g. '20'. Default 20.",
+          "type": "integer"
+        },
+        "searchspec": {
+          "description": "Optional Siebel search expression, e.g. \"[Name] LIKE 'A*'\" or '[Id] = \"1-5GZE\"'. Omit to return all rows (paged).",
+          "type": "string"
+        },
+        "sort_spec": {
+          "description": "Optional sort expression, e.g. 'Name' or 'Created DESC'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_object"
+      ],
+      "type": "object"
+    }
+  },
+  "update_record": {
+    "description": "Update an existing Siebel record by Id.",
+    "input_schema": {
+      "properties": {
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        },
+        "data": {
+          "description": "JSON object of field names to values for create/update, e.g. {\"Name\": \"Acme\"}.",
+          "type": "object"
+        },
+        "id": {
+          "description": "Siebel row Id of the record, e.g. '1-5GZE'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_object",
+        "id",
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  "upload_attachment": {
+    "description": "Upload a base64 file attachment to a Siebel record.",
+    "input_schema": {
+      "properties": {
+        "attachment_bc": {
+          "description": "Business Component for the attachment, e.g. 'Account Attachment'.",
+          "type": "string"
+        },
+        "business_component": {
+          "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
+          "type": "string"
+        },
+        "business_object": {
+          "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+          "type": "string"
+        },
+        "comment": {
+          "description": "Optional attachment comment.",
+          "type": "string"
+        },
+        "file_content_base64": {
+          "description": "Attachment file contents, base64-encoded.",
+          "type": "string"
+        },
+        "file_ext": {
+          "description": "Attachment file extension, e.g. 'pdf'.",
+          "type": "string"
+        },
+        "file_name": {
+          "description": "Attachment file name without extension.",
+          "type": "string"
+        },
+        "parent_id": {
+          "description": "Siebel row Id of the parent record, e.g. '1-5GZE'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "business_object",
+        "parent_id",
+        "attachment_bc",
+        "file_name",
+        "file_ext",
+        "file_content_base64"
+      ],
+      "type": "object"
+    }
+  },
+  "web_search": {
+    "description": "Search the web using Brave Search when configured.",
+    "input_schema": {
+      "properties": {
+        "count": {
+          "description": "Number of web results to return, as a string number, e.g. '5'.",
+          "type": "integer"
+        },
+        "query": {
+          "description": "Web search query string.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  }
+}
