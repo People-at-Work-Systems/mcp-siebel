@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 
 from ..siebel_client import SiebelError, SiebelRecord
 from ._common import (
-    _empty_result,
     _error,
     _error_result,
     _format_hierarchical_record,
@@ -17,7 +16,6 @@ from ._common import (
     _json_text,
     _require_auth,
     _resolve_bo_bc,
-    _result_dict,
     _text,
     _validate_fields_arg,
 )
@@ -247,104 +245,8 @@ async def _record_via_query(
 
 
 # ---------------------------------------------------------------------------
-# Query helpers
-# ---------------------------------------------------------------------------
-
-_FIELD_ERROR_CODES = {"SBL-EAI-50258", "SBL-EAI-50297"}
-
-
-def _is_field_error(exc: SiebelError) -> bool:
-    return exc.status_code == 500 and any(code in exc.response_body for code in _FIELD_ERROR_CODES)
-
-
-async def _query(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    # Reject placeholder field tokens (e.g. '<?>') the LLM emits when it
-    # doesn't know real field names — sending them to Siebel wastes a 50258
-    # round-trip and the subsequent retry hits Siebel's (sometimes broken)
-    # default field set. Tell the model to describe the BC first instead.
-    bad_fields = _validate_fields_arg(args.get("fields"))
-    if bad_fields:
-        return _error(bad_fields)
-    try:
-        result = await auth.client.query(
-            resolved,
-            bc,
-            search_spec=args.get("searchspec"),
-            fields=args.get("fields"),
-            sort_spec=args.get("sort_spec"),
-            page_size=int(args.get("page_size") or 20),
-            offset=int(args.get("offset") or 0),
-            childlinks=args.get("childlinks"),
-        )
-    except SiebelError as exc:
-        if exc.status_code == 404:
-            return _empty_result(args)
-        if _is_field_error(exc) and args.get("fields"):
-            # Retry with a known-safe field list instead of `None`. Omitting
-            # `fields` makes Siebel return its *default* Integration-Object
-            # field set, which can reference fields that don't exist on the
-            # BC (e.g. 'Primary Address Integration Id' on Contact →
-            # SBL-DAT-00398). 'Id' is universal, so the query still succeeds
-            # with a minimal column instead of 500-ing on bad defaults.
-            log.warning("Field error on query — retrying with minimal field list (Id)")
-            try:
-                result = await auth.client.query(
-                    resolved,
-                    bc,
-                    search_spec=args.get("searchspec"),
-                    fields=["Id"],
-                    sort_spec=args.get("sort_spec"),
-                    page_size=int(args.get("page_size") or 20),
-                    offset=int(args.get("offset") or 0),
-                    childlinks=args.get("childlinks"),
-                )
-                return _result_dict(result)
-            except SiebelError as retry_exc:
-                return _error_result(retry_exc)
-        return _error_result(exc)
-    return _result_dict(result)
-
-
-# ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
-
-
-async def _query_data(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    result = await _query(args, ctx)
-    if isinstance(result, dict) and "items" not in result:
-        return result
-    rows = [f"Record {result['offset'] + idx + 1}:\n{_format_record(item)}" for idx, item in enumerate(result["items"])]
-    total = result.get("totalCount")
-    count_info = f"Total: {total}" if total is not None else f"Returned: {len(result['items'])}"
-    more = (
-        f"Has more: YES - call again with offset={result.get('nextStartRow')}"
-        if result.get("hasMore")
-        else "Has more: NO (end of results)"
-    )
-    return _text(
-        f"{count_info} | Page size: {result['pageSize']} | {more}\n\n" + ("\n\n".join(rows) or "(no records found)")
-    )
-
-
-async def _query_records_json(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    result = await _query(args, ctx)
-    return result if "items" not in result else _json_text(result)
-
-
-async def _count_records(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    args = {**args, "page_size": 1}
-    result = await _query(args, ctx)
-    if "items" not in result:
-        return result
-    total = result.get("totalCount")
-    return _text(f"Total records: **{total}**" if total is not None else "Count not available.")
 
 
 async def _aggregate_data(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:

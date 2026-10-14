@@ -42,7 +42,7 @@ def _entry(
     required: list[str] | None = None,
     *,
     kind: str = "python",
-    handler: str = "mcp_siebel.handlers.records:_query_data",
+    handler: str = "mcp_siebel.handlers.records:_get_record",
     access: str = "read",
 ) -> dict[str, object]:
     """A minimal valid spec entry. The default handler points at a real,
@@ -286,7 +286,7 @@ def test_spec_missing_kind_rejected(tmp_path) -> None:
 
 def test_spec_missing_handler_rejected(tmp_path) -> None:
     spec = _full_valid_spec()
-    spec["query_data"] = {k: v for k, v in spec["query_data"].items() if k != "handler"}
+    spec["get_record"] = {k: v for k, v in spec["get_record"].items() if k != "handler"}
     with pytest.raises(_SpecError, match="requires a 'handler'"):
         _registry_with_spec(tmp_path, spec)
 
@@ -294,7 +294,7 @@ def test_spec_missing_handler_rejected(tmp_path) -> None:
 def test_spec_unresolvable_handler_rejected(tmp_path) -> None:
     """A handler pointing at a missing attribute fails the load."""
     spec = _full_valid_spec()
-    spec["query_data"] = {**spec["query_data"], "handler": "mcp_siebel.handlers.records:no_such_func"}
+    spec["get_record"] = {**spec["get_record"], "handler": "mcp_siebel.handlers.records:no_such_func"}
     with pytest.raises(_SpecError, match="no attribute 'no_such_func'"):
         _registry_with_spec(tmp_path, spec)
 
@@ -303,7 +303,7 @@ def test_spec_handler_outside_package_rejected(tmp_path) -> None:
     """A real module+attr outside mcp_siebel.handlers is refused — the resolver
     only permits handler-package modules."""
     spec = _full_valid_spec()
-    spec["query_data"] = {**spec["query_data"], "handler": "mcp_siebel.siebel_client:SiebelClient"}
+    spec["get_record"] = {**spec["get_record"], "handler": "mcp_siebel.siebel_client:SiebelClient"}
     with pytest.raises(_SpecError, match="is not under"):
         _registry_with_spec(tmp_path, spec)
 

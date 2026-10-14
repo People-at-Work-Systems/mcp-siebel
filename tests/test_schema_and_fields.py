@@ -28,7 +28,6 @@ import pytest
 from mcp_siebel.config import AppSettings
 from mcp_siebel.handlers._common import _validate_fields_arg
 from mcp_siebel.handlers.metadata import _describe_business_object
-from mcp_siebel.handlers.records import _query_data
 from mcp_siebel.schema_cache import SchemaCache
 from mcp_siebel.siebel_client import (
     SiebelBCDescriptor,
@@ -36,7 +35,7 @@ from mcp_siebel.siebel_client import (
     SiebelFieldDescriptor,
     SiebelQueryResult,
 )
-from mcp_siebel.tools import SessionContext, ToolContext
+from mcp_siebel.tools import SessionContext, ToolContext, ToolRegistry
 
 # ---------------------------------------------------------------------------
 # Registry-served schema (authored in tool_specs.json, $ref-resolved by the loader)
@@ -80,20 +79,22 @@ def test_validate_fields_rejects_placeholders(raw):
 # ---------------------------------------------------------------------------
 
 
-def _query_ctx() -> tuple[ToolContext, AsyncMock]:
+def _query_reg_and_session() -> tuple[ToolRegistry, SessionContext, AsyncMock]:
     query_mock = AsyncMock()
     client = AsyncMock()
     client.query = query_mock
     cache = AsyncMock()
     cache.resolve_business_object = AsyncMock(return_value="Account")
     session = SessionContext(session_id="s1", username="t", client=client, cache=cache)
-    return ToolContext(settings=AppSettings(), session=session), query_mock
+    return ToolRegistry(AppSettings()), session, query_mock
 
 
 @pytest.mark.asyncio
 async def test_query_data_rejects_placeholder_fields_without_calling_siebel():
-    ctx, query_mock = _query_ctx()
-    response = await _query_data({"business_object": "Account", "business_component": "Account", "fields": "<?>"}, ctx)
+    reg, session, query_mock = _query_reg_and_session()
+    response = await reg.call(
+        "query_data", {"business_object": "Account", "business_component": "Account", "fields": "<?>"}, session
+    )
     assert response.get("isError") is True
     assert "placeholder" in response["content"][0]["text"].lower()
     query_mock.assert_not_called()
@@ -110,12 +111,14 @@ async def test_query_data_field_error_retries_with_id_not_none():
     validation) must trigger the 50258 retry with fields=['Id'], never with
     None, so Siebel's broken default Contact field set is never used."""
     result = SiebelQueryResult(items=[{"Id": "1-5GZE"}], total_count=1, has_more=False, offset=0, page_size=20)
-    ctx, query_mock = _query_ctx()
+    reg, session, query_mock = _query_reg_and_session()
     field_error = SiebelError("bad field", 500, '{"ERROR":"...SBL-EAI-50258..."}')
     query_mock.side_effect = [field_error, result]
 
-    response = await _query_data(
-        {"business_object": "Account", "business_component": "Account", "fields": "NonExistentField"}, ctx
+    response = await reg.call(
+        "query_data",
+        {"business_object": "Account", "business_component": "Account", "fields": "NonExistentField"},
+        session,
     )
     assert response.get("isError") is not True  # retry succeeded
     # Second (retry) call must pass fields=["Id"], not None.

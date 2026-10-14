@@ -127,7 +127,6 @@
     },
     "count_records": {
       "description": "Count records matching an optional searchspec.",
-      "handler": "mcp_siebel.handlers.records:_count_records",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -145,8 +144,11 @@
         ],
         "type": "object"
       },
-      "kind": "python",
-      "access": "read"
+      "kind": "bc_query",
+      "access": "read",
+      "scope": "root",
+      "result": "count",
+      "render": "count_prose"
     },
     "create_child_record": {
       "description": "Create child record(s) under a parent record.",
@@ -444,7 +446,6 @@
     },
     "query_child_records": {
       "description": "Query child records under a parent record.",
-      "handler": "mcp_siebel.handlers.children:_query_child_records",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -482,12 +483,14 @@
         ],
         "type": "object"
       },
-      "kind": "python",
-      "access": "read"
+      "kind": "bc_query",
+      "access": "read",
+      "scope": "child",
+      "result": "records",
+      "render": "child_query_prose"
     },
     "query_child_records_json": {
       "description": "Query child records and return structured JSON.",
-      "handler": "mcp_siebel.handlers.children:_query_child_records_json",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -525,12 +528,14 @@
         ],
         "type": "object"
       },
-      "kind": "python",
-      "access": "read"
+      "kind": "bc_query",
+      "access": "read",
+      "scope": "child",
+      "result": "records",
+      "render": "query_json"
     },
     "query_data": {
       "description": "Query Siebel CRM data using a Siebel searchspec expression.",
-      "handler": "mcp_siebel.handlers.records:_query_data",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -560,12 +565,14 @@
         ],
         "type": "object"
       },
-      "kind": "python",
-      "access": "read"
+      "kind": "bc_query",
+      "access": "read",
+      "scope": "root",
+      "result": "records",
+      "render": "query_prose"
     },
     "query_records_json": {
       "description": "Query records and return structured JSON.",
-      "handler": "mcp_siebel.handlers.records:_query_records_json",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -602,8 +609,11 @@
         ],
         "type": "object"
       },
-      "kind": "python",
-      "access": "read"
+      "kind": "bc_query",
+      "access": "read",
+      "scope": "root",
+      "result": "records",
+      "render": "query_json"
     },
     "update_record": {
       "description": "Update an existing Siebel record by Id.",

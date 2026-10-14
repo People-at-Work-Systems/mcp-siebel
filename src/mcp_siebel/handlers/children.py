@@ -1,71 +1,19 @@
-"""Child-record handlers: query / create under a parent, and attachments."""
+"""Child-record handlers: create under a parent, and attachments."""
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
 
-from ..siebel_client import SiebelError
 from ._common import (
-    _empty_result,
     _error,
-    _error_result,
     _format_record,
-    _json_text,
     _require_auth,
     _resolve_bo_bc,
-    _result_dict,
     _text,
-    _validate_fields_arg,
 )
 
 if TYPE_CHECKING:
     from ..tools import ToolContext
-
-log = logging.getLogger("mcp-siebel")
-
-
-async def _query_child(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    # Same placeholder guard as records._query — see there for rationale.
-    bad_fields = _validate_fields_arg(args.get("fields"))
-    if bad_fields:
-        return _error(bad_fields)
-    try:
-        result = await auth.client.query_child_records(
-            resolved,
-            bc,
-            str(args["parent_id"]),
-            str(args["child_business_component"]),
-            search_spec=args.get("searchspec"),
-            fields=args.get("fields"),
-            sort_spec=args.get("sort_spec"),
-            page_size=int(args.get("page_size") or 20),
-            offset=int(args.get("offset") or 0),
-        )
-    except SiebelError as exc:
-        if exc.status_code == 404:
-            return _empty_result(args)
-        return _error_result(exc)
-    return _result_dict(result)
-
-
-async def _query_child_records(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    result = await _query_child(args, ctx)
-    if "items" not in result:
-        return result
-    rows = [f"Record {result['offset'] + idx + 1}:\n{_format_record(item)}" for idx, item in enumerate(result["items"])]
-    return _text("\n\n".join(rows) or "(no child records found)")
-
-
-async def _query_child_records_json(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    result = await _query_child(args, ctx)
-    return result if "items" not in result else _json_text(result)
 
 
 async def _create_child_record(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
