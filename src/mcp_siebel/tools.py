@@ -1,19 +1,19 @@
 """MCP-style Siebel tool registry.
 
 The registry owns no tool-specific code. Each tool's metadata (description +
-input_schema) and its handler reference (``"kind": "python"`` +
-``"handler": "mcp_siebel.handlers.<module>:<func>"``) come from
-``mcp_siebel/specs/tool_specs.json`` — the single source of truth, hot-reloaded
-by mtime. Handlers live under ``mcp_siebel.handlers`` and are resolved with
-``importlib`` (see ``_resolve_handler``), which permits modules only under that
-package. This file contains no tool names: adding a tool means adding a handler
-module function and a spec entry, nothing here.
+input_schema) and its ``kind`` come from ``mcp_siebel/specs/tool_specs.json`` —
+the single source of truth, hot-reloaded by mtime. A small set of generic
+executors (one per kind) turn a spec entry + the runtime arguments into a tool
+result; ``"python"`` is the escape hatch that resolves a handler by importlib
+from the entry's ``"handler"`` field (permitting only ``mcp_siebel.handlers``
+modules). This file contains no tool names: adding a tool means adding a spec
+entry (and, for the python kind, a handler module function), nothing here.
 
 The spec may use a top-level ``$defs`` block with ``$ref`` for shared parameter
 definitions; the loader inlines every ``$ref`` before exposing schemas, so
 clients always receive a fully-resolved inputSchema. Every reload re-runs the
 full pipeline (parse with duplicate detection → deref → validate → per-entry
-kind + handler + access/session-rule resolution) and only swaps in the new set
+kind + executor + access/session-rule resolution) and only swaps in the new set
 on success; on any failure the last valid set keeps serving and the failure is
 logged. If the very first load fails (no last valid set) construction raises
 ``_SpecError`` so the process exits non-zero with a clear error — the handlers
@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 
 from .config import AppSettings
 from .handlers._common import _error, _error_result
+from .kinds import _COMMON_FIELDS, _KindSpec, _SpecError
 
 if TYPE_CHECKING:
     # Annotation-only (stringified via ``from __future__ import annotations``):
@@ -156,13 +157,6 @@ def _resolve_spec_path(settings: AppSettings) -> str:
     return str(files("mcp_siebel") / "specs" / "tool_specs.json")
 
 
-class _SpecError(Exception):
-    """Raised when a tool-spec file is unreadable, unparseable, has bad $refs,
-    fails validation, or names an unknown kind / unresolvable handler. The
-    registry treats any _SpecError as a failed reload and keeps the last valid
-    tool set (or serves nothing if the first load failed)."""
-
-
 def _no_dup_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     """``object_pairs_hook`` that rejects duplicate keys anywhere in the spec —
     in particular duplicate tool names under ``tools`` (name uniqueness)."""
@@ -199,11 +193,12 @@ def _deref(node: Any, defs: dict[str, Any], _stack: tuple[str, ...] = ()) -> Any
 
 
 def _valid_spec_entry(entry: Any) -> bool:
-    """Pre-deref structural check: an entry must carry a string description, a
-    string ``kind``, a string ``handler`` reference, a valid ``access`` level,
-    and an input_schema dict with a type and a properties map.
-    ``always_enabled`` and ``establishes_session`` are optional but, if
-    present, must be bools."""
+    """Pre-deref structural check of the fields COMMON to every kind: an entry
+    must carry a string description, a string ``kind``, a valid ``access``
+    level, and an input_schema dict with a type and a properties map.
+    ``always_enabled`` and ``establishes_session`` are optional but, if present,
+    must be bools. Kind-specific fields (e.g. ``handler`` for python,
+    ``scope``/``result``/``render`` for bc_query) are validated per-kind."""
     return (
         isinstance(entry, dict)
         and isinstance(entry.get("description"), str)
@@ -211,7 +206,6 @@ def _valid_spec_entry(entry: Any) -> bool:
         and isinstance(entry["input_schema"].get("properties"), dict)
         and "type" in entry["input_schema"]
         and isinstance(entry.get("kind"), str)
-        and isinstance(entry.get("handler"), str)
         and isinstance(entry.get("access"), str)
         and entry.get("access") in _ACCESS_LEVELS
         and ("always_enabled" not in entry or isinstance(entry["always_enabled"], bool))
@@ -232,11 +226,6 @@ def _valid_resolved_schema(schema: Any) -> bool:
     return all(isinstance(p, dict) and "type" in p for p in props.values())
 
 
-# Kinds the registry knows how to dispatch. ``"python"`` resolves a handler by
-# importlib from the spec's ``"handler"`` field. Future kinds (generic BC
-# query/upsert/delete + business-service executors) will be added here.
-_KNOWN_KINDS: set[str] = {"python"}
-
 # Access levels a spec entry may declare. ``read`` is always available;
 # ``write`` / ``delete`` are gated by SIEBEL_ALLOW_WRITE / SIEBEL_ALLOW_DELETE.
 _ACCESS_LEVELS: set[str] = {"read", "write", "delete"}
@@ -244,6 +233,52 @@ _ACCESS_LEVELS: set[str] = {"read", "write", "delete"}
 # Handler references may only name modules inside this package — the resolver
 # rejects anything outside it so a spec can't pull in arbitrary code.
 _ALLOWED_HANDLER_PKG = "mcp_siebel.handlers"
+
+
+# --- Kind registry ---------------------------------------------------------
+#
+# Each kind declares its executor (assembled once at load time into the
+# ToolHandler ToolRegistry.call invokes), the spec options it requires/allows,
+# and the access levels it permits. Kind-specific options are validated at load
+# time; any violation is a _SpecError (fatal on first load, keep-last-valid on
+# reload). The ``python`` kind is the escape hatch for tools with real custom
+# logic; generic executors live under ``executors/`` and register here.
+
+
+def _validate_python(entry: dict[str, Any], name: str, schema: dict[str, Any]) -> None:
+    options = set(entry.keys()) - _COMMON_FIELDS
+    extra = options - {"handler"}
+    if extra:
+        raise _SpecError(f"unknown option(s) {sorted(extra)} for python entry {name!r}")
+    if not isinstance(entry.get("handler"), str) or not entry["handler"]:
+        raise _SpecError(f"kind 'python' requires a 'handler' string for {name!r}")
+
+
+def _assemble_python(entry: dict[str, Any], name: str) -> ToolHandler:
+    try:
+        return _resolve_handler(entry["handler"])
+    except _SpecError as exc:
+        raise _SpecError(f"handler error in {name!r}: {exc}") from exc
+
+
+_KINDS: dict[str, _KindSpec] = {
+    "python": _KindSpec(
+        name="python",
+        allowed_access=frozenset({"read", "write", "delete"}),
+        allowed_options=frozenset({"handler"}),
+        required_options=frozenset({"handler"}),
+        validate=_validate_python,
+        assemble=_assemble_python,
+    ),
+}
+
+# Register the generic executors (imported for their side effect of adding to
+# _KINDS; the import is deferred to the bottom of the module to keep the runtime
+# import graph acyclic — the executor modules import only kinds/renderers/
+# handlers at runtime, not tools).
+from .executors.query import BC_QUERY_KIND  # noqa: E402
+
+_KINDS[BC_QUERY_KIND.name] = BC_QUERY_KIND
 
 
 def _resolve_handler(handler_ref: Any) -> ToolHandler:
@@ -281,7 +316,7 @@ class ToolRegistry:
     by mtime — ``list_tools()`` stats the file and re-reads it only when it
     changed, so edits go live on the next tools/list with no restart. Every
     reload re-runs the full pipeline (parse with duplicate detection → deref →
-    validate → per-entry kind + handler resolution) and only swaps in the new
+    validate → per-entry kind + executor resolution) and only swaps in the new
     set on success; on any failure the last valid set keeps serving and the
     failure is logged. If the very first load fails there is no last valid set,
     so construction raises ``_SpecError`` (the process exits non-zero with a
@@ -322,12 +357,13 @@ class ToolRegistry:
         }
 
     def _load_valid_tools(self) -> dict[str, ToolSpec]:
-        """Read, parse, deref, validate, and resolve handlers for the spec file.
+        """Read, parse, deref, validate, and resolve executors for the spec file.
         Returns a fresh ``name → ToolSpec`` map on success; raises
         ``_SpecError`` on any failure so the caller can keep the last valid
-        set. Every entry must declare a known ``kind`` and a resolvable
-        ``handler`` — a single bad entry rejects the whole reload so a
-        half-edited spec never partially replaces a good one."""
+        set. Every entry must declare a known ``kind``; the kind's validator
+        checks its kind-specific options and the kind's assembler binds the
+        executor — a single bad entry rejects the whole reload so a half-edited
+        spec never partially replaces a good one."""
         try:
             with open(self._spec_path, encoding="utf-8") as fh:
                 data = json.loads(fh.read(), object_pairs_hook=_no_dup_pairs)
@@ -347,12 +383,9 @@ class ToolRegistry:
             if not _valid_spec_entry(entry):
                 raise _SpecError(f"invalid entry for {name!r}")
             kind = entry["kind"]
-            if kind not in _KNOWN_KINDS:
-                raise _SpecError(f"unknown kind {kind!r} for {name!r} (known: {sorted(_KNOWN_KINDS)})")
-            try:
-                handler = _resolve_handler(entry["handler"])
-            except _SpecError as exc:
-                raise _SpecError(f"handler error in {name!r}: {exc}") from exc
+            kind_spec = _KINDS.get(kind)
+            if kind_spec is None:
+                raise _SpecError(f"unknown kind {kind!r} for {name!r} (known: {sorted(_KINDS)})")
             try:
                 schema = _deref(entry["input_schema"], defs)
             except _SpecError as exc:
@@ -360,6 +393,19 @@ class ToolRegistry:
             if not _valid_resolved_schema(schema):
                 raise _SpecError(f"invalid resolved schema for {name!r}")
             access = entry["access"]
+            if access not in kind_spec.allowed_access:
+                raise _SpecError(
+                    f"kind {kind!r} permits access {sorted(kind_spec.allowed_access)} "
+                    f"(entry {name!r} has access {access!r})"
+                )
+            # Kind-specific option validation (raises _SpecError naming the rule).
+            kind_spec.validate(entry, name, schema)
+            # Bind the executor once; the returned callable is the single handler
+            # ToolRegistry.call invokes.
+            try:
+                handler = kind_spec.assemble(entry, name)
+            except _SpecError as exc:
+                raise _SpecError(f"{kind} error in {name!r}: {exc}") from exc
             always_enabled = bool(entry.get("always_enabled", False))
             # always_enabled exempts a tool from SIEBEL_DISABLED_TOOLS only — it
             # must never bypass the access gate, so it is only permitted on a

@@ -1,0 +1,269 @@
+"""Unit tests for the ``bc_query`` kind: load-time option validation, bind, and
+searchspec_template — exercised with test-only fixture specs (none of the
+bundled tools use bind or a template yet; customer-specific tools with a fixed
+BO/BC/fields will depend on both).
+"""
+
+from __future__ import annotations
+
+import json
+from copy import deepcopy
+from importlib.resources import files
+from unittest.mock import AsyncMock
+
+import pytest
+
+from mcp_siebel.config import AppSettings
+from mcp_siebel.siebel_client import SiebelQueryResult
+from mcp_siebel.tools import SessionContext, ToolRegistry, _SpecError
+
+
+def _bundled_spec() -> dict[str, object]:
+    return json.loads(files("mcp_siebel").joinpath("specs", "tool_specs.json").read_text(encoding="utf-8"))
+
+
+def _spec_path(tmp_path, extra: dict[str, dict[str, object]]) -> str:
+    """Bundled spec + extra/overriding tool entries, written to a temp file."""
+    spec = deepcopy(_bundled_spec())
+    spec["tools"].update(extra)  # type: ignore[union-attr]
+    path = tmp_path / "spec.json"
+    path.write_text(json.dumps(spec, indent=2), encoding="utf-8")
+    return str(path)
+
+
+def _bcq(
+    *,
+    scope: str = "root",
+    result: str = "records",
+    render: str = "query_prose",
+    props: dict[str, object] | None = None,
+    required: list[str] | None = None,
+    bind: dict[str, object] | None = None,
+    template: str | None = None,
+    handler: str | None = None,
+    access: str = "read",
+) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "description": "fixture bc_query tool",
+        "kind": "bc_query",
+        "access": access,
+        "scope": scope,
+        "result": result,
+        "render": render,
+        "input_schema": {"type": "object", "properties": props or {}},
+    }
+    if required:
+        entry["input_schema"]["required"] = required  # type: ignore[index]
+    if bind is not None:
+        entry["bind"] = bind
+    if template is not None:
+        entry["searchspec_template"] = template
+    if handler is not None:
+        entry["handler"] = handler
+    return entry
+
+
+def _reg(tmp_path, extra: dict[str, dict[str, object]], **settings_overrides) -> ToolRegistry:
+    settings = AppSettings(**settings_overrides)
+    settings.tools_spec_path = _spec_path(tmp_path, extra)
+    return ToolRegistry(settings)
+
+
+def _session(query_result: SiebelQueryResult | None = None) -> tuple[SessionContext, AsyncMock]:
+    client = AsyncMock()
+    if query_result is not None:
+        client.query = AsyncMock(return_value=query_result)
+    cache = AsyncMock()
+    cache.resolve_business_object = AsyncMock(return_value="Account")
+    return SessionContext(session_id="s1", username="t", client=client, cache=cache), client
+
+
+# ---------------------------------------------------------------------------
+# Load-time validation
+# ---------------------------------------------------------------------------
+
+
+def test_bc_query_forbids_handler(tmp_path) -> None:
+    with pytest.raises(_SpecError, match="handler"):
+        _reg(tmp_path, {"x": _bcq(handler="mcp_siebel.handlers.records:_get_record")})
+
+
+def test_bc_query_access_must_be_read(tmp_path) -> None:
+    with pytest.raises(_SpecError, match="permits access"):
+        _reg(tmp_path, {"x": _bcq(access="write")})
+
+
+def test_bc_query_unknown_render_rejected(tmp_path) -> None:
+    with pytest.raises(_SpecError, match="unknown render"):
+        _reg(tmp_path, {"x": _bcq(render="nope")})
+
+
+def test_bc_query_missing_required_option_rejected(tmp_path) -> None:
+    entry = _bcq()
+    del entry["scope"]
+    with pytest.raises(_SpecError, match="missing required option"):
+        _reg(tmp_path, {"x": entry})
+
+
+def test_bc_query_invalid_scope_rejected(tmp_path) -> None:
+    with pytest.raises(_SpecError, match="invalid scope"):
+        _reg(tmp_path, {"x": _bcq(scope="bogus")})
+
+
+def test_bc_query_bind_overlap_with_input_schema_rejected(tmp_path) -> None:
+    with pytest.raises(_SpecError, match="also in input_schema"):
+        _reg(
+            tmp_path,
+            {"x": _bcq(props={"business_object": {"type": "string"}}, bind={"business_object": "Account"})},
+        )
+
+
+def test_bc_query_template_placeholder_must_exist_in_input_schema(tmp_path) -> None:
+    with pytest.raises(_SpecError, match="not in input_schema"):
+        _reg(
+            tmp_path,
+            {"x": _bcq(props={"name": {"type": "string"}}, template="[Name] LIKE '{foo}'")},
+        )
+
+
+def test_bc_query_template_and_searchspec_arg_mutually_exclusive(tmp_path) -> None:
+    with pytest.raises(_SpecError, match="mutually exclusive"):
+        _reg(
+            tmp_path,
+            {"x": _bcq(props={"id": {"type": "string"}, "searchspec": {"type": "string"}}, template="[Id]='{id}'")},
+        )
+
+
+# ---------------------------------------------------------------------------
+# bind — fixed values merged with the caller's args
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bind_supplies_business_object_and_component(tmp_path) -> None:
+    result = SiebelQueryResult(
+        items=[{"Id": "1", "Name": "Acme"}], total_count=1, has_more=False, offset=0, page_size=20
+    )
+    reg = _reg(
+        tmp_path,
+        {
+            "acct_query": _bcq(
+                bind={"business_object": "Account", "business_component": "Account"},
+                props={"searchspec": {"type": "string"}, "fields": {"type": "array", "items": {"type": "string"}}},
+            )
+        },
+    )
+    session, client = _session(result)
+    resp = await reg.call("acct_query", {"searchspec": "[Name] LIKE 'A*'"}, session)
+    assert resp.get("isError") is not True
+    args, kwargs = client.query.call_args
+    assert args[0] == "Account"  # business_object (positional)
+    assert args[1] == "Account"  # business_component (positional)
+    assert kwargs["search_spec"] == "[Name] LIKE 'A*'"
+
+
+# ---------------------------------------------------------------------------
+# searchspec_template — placeholder substitution + escaping
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_searchspec_template_substitutes_placeholders(tmp_path) -> None:
+    result = SiebelQueryResult(items=[{"Id": "1"}], total_count=1, has_more=False, offset=0, page_size=20)
+    reg = _reg(
+        tmp_path,
+        {
+            "name_query": _bcq(
+                bind={"business_object": "Account", "business_component": "Account"},
+                props={"name_prefix": {"type": "string"}},
+                required=["name_prefix"],
+                template="[Name] LIKE '{name_prefix}*'",
+            )
+        },
+    )
+    session, client = _session(result)
+    await reg.call("name_query", {"name_prefix": "A"}, session)
+    assert client.query.call_args.kwargs["search_spec"] == "[Name] LIKE 'A*'"
+
+
+@pytest.mark.asyncio
+async def test_searchspec_template_doubles_single_quotes(tmp_path) -> None:
+    result = SiebelQueryResult(items=[{"Id": "1"}], total_count=1, has_more=False, offset=0, page_size=20)
+    reg = _reg(
+        tmp_path,
+        {
+            "name_query": _bcq(
+                bind={"business_object": "Account", "business_component": "Account"},
+                props={"name": {"type": "string"}},
+                required=["name"],
+                template="[Name] = '{name}'",
+            )
+        },
+    )
+    session, client = _session(result)
+    await reg.call("name_query", {"name": "O'Brien"}, session)
+    assert client.query.call_args.kwargs["search_spec"] == "[Name] = 'O''Brien'"
+
+
+@pytest.mark.asyncio
+async def test_searchspec_template_rejects_forbidden_chars(tmp_path) -> None:
+    reg = _reg(
+        tmp_path,
+        {
+            "name_query": _bcq(
+                bind={"business_object": "Account", "business_component": "Account"},
+                props={"name": {"type": "string"}},
+                required=["name"],
+                template="[Name] = '{name}'",
+            )
+        },
+    )
+    session, client = _session()
+    resp = await reg.call("name_query", {"name": "A[B"}, session)
+    assert resp.get("isError") is True
+    assert "not allowed" in resp["content"][0]["text"]
+    client.query.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_searchspec_template_missing_placeholder_value_is_a_tool_error(tmp_path) -> None:
+    reg = _reg(
+        tmp_path,
+        {
+            "name_query": _bcq(
+                bind={"business_object": "Account", "business_component": "Account"},
+                props={"name": {"type": "string"}},
+                template="[Name] = '{name}'",
+            )
+        },
+    )
+    session, client = _session()
+    resp = await reg.call("name_query", {}, session)
+    assert resp.get("isError") is True
+    assert "was not provided" in resp["content"][0]["text"]
+    client.query.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# count via bc_query forces page_size=1
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bc_query_count_forces_page_size_one(tmp_path) -> None:
+    result = SiebelQueryResult(items=[{"Id": "1"}], total_count=7, has_more=False, offset=0, page_size=1)
+    reg = _reg(
+        tmp_path,
+        {
+            "acct_count": _bcq(
+                result="count",
+                render="count_prose",
+                bind={"business_object": "Account", "business_component": "Account"},
+                props={"searchspec": {"type": "string"}},
+            )
+        },
+    )
+    session, client = _session(result)
+    resp = await reg.call("acct_count", {"searchspec": "[Name] LIKE 'A*'"}, session)
+    assert resp["content"][0]["text"] == "Total records: **7**"
+    assert client.query.call_args.kwargs["page_size"] == 1

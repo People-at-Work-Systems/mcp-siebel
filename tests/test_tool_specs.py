@@ -21,7 +21,7 @@ from importlib.resources import files
 import pytest
 
 from mcp_siebel.config import AppSettings
-from mcp_siebel.tools import _KNOWN_KINDS, ToolRegistry, _resolve_handler, _SpecError
+from mcp_siebel.tools import _KINDS, ToolRegistry, _resolve_handler, _SpecError
 
 
 def _bundled_spec() -> dict[str, object]:
@@ -88,14 +88,21 @@ def _full_valid_spec() -> dict[str, dict[str, object]]:
 # ---------------------------------------------------------------------------
 
 
-def test_spec_entries_have_known_kind_and_resolvable_handler() -> None:
-    """Every bundled entry declares a known kind and a handler that resolves to
-    a callable under mcp_siebel.handlers — and the registry loads them all."""
+def test_spec_entries_have_known_kind_and_valid_options() -> None:
+    """Every bundled entry declares a known kind whose allowed-access/options
+    accept it, and the registry loads them all."""
     tools = _bundled_tools()
     for name, entry in tools.items():
-        assert entry["kind"] in _KNOWN_KINDS, f"{name}: unknown kind {entry['kind']!r}"
-        assert entry["handler"].startswith("mcp_siebel.handlers."), f"{name}: handler outside handlers pkg"
-        assert callable(_resolve_handler(entry["handler"])), f"{name}: handler not callable"
+        kind = entry["kind"]
+        assert kind in _KINDS, f"{name}: unknown kind {kind!r}"
+        kind_spec = _KINDS[kind]
+        assert entry["access"] in kind_spec.allowed_access, f"{name}: access not permitted by kind"
+        # python entries resolve a real handler; bc_query entries have none.
+        if kind == "python":
+            assert entry["handler"].startswith("mcp_siebel.handlers."), f"{name}: handler outside handlers pkg"
+            assert callable(_resolve_handler(entry["handler"])), f"{name}: handler not callable"
+        else:
+            assert "handler" not in entry, f"{name}: non-python kind must not declare a handler"
     reg = ToolRegistry(AppSettings())
     assert set(reg._tools) == set(tools), "registry didn't load every bundled tool"
 
@@ -280,7 +287,7 @@ def test_spec_missing_kind_rejected(tmp_path) -> None:
 def test_spec_missing_handler_rejected(tmp_path) -> None:
     spec = _full_valid_spec()
     spec["query_data"] = {k: v for k, v in spec["query_data"].items() if k != "handler"}
-    with pytest.raises(_SpecError, match="invalid entry for 'query_data'"):
+    with pytest.raises(_SpecError, match="requires a 'handler'"):
         _registry_with_spec(tmp_path, spec)
 
 
