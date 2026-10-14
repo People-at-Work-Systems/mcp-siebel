@@ -1,39 +1,63 @@
 """Tests for the externalized, hot-reloadable tool-spec JSON.
 
 The spec file (``mcp_siebel/specs/tool_specs.json``) is the single source of
-truth for each tool's description and input_schema at runtime; the registry knows
-only the handlers (``_build_handlers()``). Shared parameter definitions live
-under a top-level ``$defs`` block and are referenced via ``$ref``; the loader
-inlines every ``$ref`` before exposing schemas, validates, and runs a
-handler↔spec coverage check on every (re)load — keeping the last valid set on
-failure and degrading only if the first load fails.
+truth for each tool's description, input_schema, ``kind``, and ``handler``
+reference. The registry resolves handlers from the spec by ``importlib``
+(permitting only ``mcp_siebel.handlers`` modules) and knows no tool names
+itself. Shared parameter definitions live under a top-level ``$defs`` block and
+are referenced via ``$ref``; the loader inlines every ``$ref`` before exposing
+schemas, validates each entry, and checks that every entry has a known ``kind``
+and a resolvable ``handler`` on every (re)load — keeping the last valid set on
+failure and serving nothing if the first load fails.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 from importlib.resources import files
 
 from mcp_siebel.config import AppSettings
-from mcp_siebel.tools import ToolRegistry, _build_handlers
+from mcp_siebel.tools import _KNOWN_KINDS, ToolRegistry, _resolve_handler
 
 
-def _degraded_description(name: str) -> str:
-    return f"Tool '{name}' — spec unavailable (tool_specs.json missing or invalid)."
+def _bundled_spec() -> dict[str, object]:
+    return json.loads(files("mcp_siebel").joinpath("specs", "tool_specs.json").read_text(encoding="utf-8"))
+
+
+def _bundled_tools() -> dict[str, dict[str, object]]:
+    return _bundled_spec()["tools"]  # type: ignore[return-value]
+
+
+def _bundled_defs() -> dict[str, object]:
+    return _bundled_spec().get("$defs", {})  # type: ignore[return-value]
 
 
 def _entry(
-    description: str, props: dict[str, object] | None = None, required: list[str] | None = None
+    description: str,
+    props: dict[str, object] | None = None,
+    required: list[str] | None = None,
+    *,
+    kind: str = "python",
+    handler: str = "mcp_siebel.handlers.records:_query_data",
 ) -> dict[str, object]:
+    """A minimal valid spec entry. The default handler points at a real,
+    resolvable function so an entry is valid out of the box; tests that need a
+    bad kind/handler override those kwargs."""
     schema: dict[str, object] = {"type": "object", "properties": props or {}}
     if required:
         schema["required"] = required
-    return {"description": description, "input_schema": schema}
+    return {"description": description, "kind": kind, "handler": handler, "input_schema": schema}
 
 
 def _write_spec(path, tools: dict[str, object], defs: dict[str, object] | None = None) -> None:
-    path.write_text(json.dumps({"$defs": defs or {}, "tools": tools}), encoding="utf-8")
+    # Always include the bundled $defs (test defs override/extend) so the
+    # non-overridden bundled tools — which reference shared $defs — resolve.
+    # A spec that should fail must fail because of its intentionally-bad entry,
+    # not because every other tool's $ref lost its definition.
+    merged = {**_bundled_defs(), **(defs or {})}
+    path.write_text(json.dumps({"$defs": merged, "tools": tools}, sort_keys=True, indent=2), encoding="utf-8")
 
 
 def _registry_with_spec(tmp_path, tools: dict[str, object], defs: dict[str, object] | None = None) -> ToolRegistry:
@@ -44,10 +68,10 @@ def _registry_with_spec(tmp_path, tools: dict[str, object], defs: dict[str, obje
     return ToolRegistry(settings)
 
 
-# A spec that covers every handler with a minimal valid entry — the baseline for
-# reload/coverage tests so the coverage gate passes.
-def _full_minimal_spec() -> dict[str, object]:
-    return {name: _entry(f"{name} tool", {"business_object": {"type": "string"}}) for name in _build_handlers()}
+def _full_valid_spec() -> dict[str, dict[str, object]]:
+    """A deep copy of the bundled spec's tools — a baseline that resolves real
+    handlers, so reload/override tests can mutate one tool and still load."""
+    return deepcopy(_bundled_tools())
 
 
 # ---------------------------------------------------------------------------
@@ -55,17 +79,16 @@ def _full_minimal_spec() -> dict[str, object]:
 # ---------------------------------------------------------------------------
 
 
-def test_spec_json_covers_all_handlers() -> None:
-    """The bundled spec's tool set exactly matches the handler set — so adding a
-    handler without a spec entry (or a stale spec entry) is caught at load time.
-    Value equality is NOT asserted, so editing descriptions in the JSON is fine."""
-    spec = json.loads(files("mcp_siebel").joinpath("specs", "tool_specs.json").read_text(encoding="utf-8"))
-    handler_names = set(_build_handlers())
-    spec_names = set(spec["tools"])
-    assert spec_names == handler_names, {
-        "handlers without a spec entry": handler_names - spec_names,
-        "spec entries without a handler": spec_names - handler_names,
-    }
+def test_spec_entries_have_known_kind_and_resolvable_handler() -> None:
+    """Every bundled entry declares a known kind and a handler that resolves to
+    a callable under mcp_siebel.handlers — and the registry loads them all."""
+    tools = _bundled_tools()
+    for name, entry in tools.items():
+        assert entry["kind"] in _KNOWN_KINDS, f"{name}: unknown kind {entry['kind']!r}"
+        assert entry["handler"].startswith("mcp_siebel.handlers."), f"{name}: handler outside handlers pkg"
+        assert callable(_resolve_handler(entry["handler"])), f"{name}: handler not callable"
+    reg = ToolRegistry(AppSettings())
+    assert set(reg._tools) == set(tools), "registry didn't load every bundled tool"
 
 
 def test_spec_refs_are_inlined() -> None:
@@ -112,7 +135,7 @@ def test_spec_defs_resolved_from_override(tmp_path) -> None:
     defs = {"business_object": {"type": "string", "description": "override BO"}}
     reg = _registry_with_spec(
         tmp_path,
-        _full_minimal_spec()
+        _full_valid_spec()
         | {"query_data": _entry("q", {"business_object": {"$ref": "#/$defs/business_object"}}, ["business_object"])},
         defs,
     )
@@ -121,24 +144,25 @@ def test_spec_defs_resolved_from_override(tmp_path) -> None:
 
 
 def test_spec_unsupported_ref_rejected(tmp_path) -> None:
-    """An external or non-#$defs $ref fails the load (degraded, since first load)."""
+    """An external or non-#$defs $ref fails the first load — no tools served."""
     reg = _registry_with_spec(
         tmp_path,
-        _full_minimal_spec()
+        _full_valid_spec()
         | {"query_data": _entry("q", {"business_object": {"$ref": "https://example.com/bo"}}, ["business_object"])},
         {},
     )
-    assert reg._tools["query_data"].description == _degraded_description("query_data")
+    assert reg._tools == {}
+    assert reg.list_tools() == []
 
 
 def test_spec_unknown_ref_rejected(tmp_path) -> None:
     reg = _registry_with_spec(
         tmp_path,
-        _full_minimal_spec()
+        _full_valid_spec()
         | {"query_data": _entry("q", {"business_object": {"$ref": "#/$defs/nope"}}, ["business_object"])},
         {"business_object": {"type": "string"}},
     )
-    assert reg._tools["query_data"].description == _degraded_description("query_data")
+    assert reg._tools == {}
 
 
 def test_spec_circular_ref_rejected(tmp_path) -> None:
@@ -148,11 +172,11 @@ def test_spec_circular_ref_rejected(tmp_path) -> None:
     }
     reg = _registry_with_spec(
         tmp_path,
-        _full_minimal_spec()
+        _full_valid_spec()
         | {"query_data": _entry("q", {"business_object": {"$ref": "#/$defs/a"}}, ["business_object"])},
         defs,
     )
-    assert reg._tools["query_data"].description == _degraded_description("query_data")
+    assert reg._tools == {}
 
 
 # ---------------------------------------------------------------------------
@@ -169,8 +193,7 @@ def test_spec_hot_reload(tmp_path) -> None:
     spec = tmp_path / "spec.json"
     _write_spec(
         spec,
-        _full_minimal_spec()
-        | {"query_data": _entry("v1", {"business_object": {"type": "string"}}, ["business_object"])},
+        _full_valid_spec() | {"query_data": _entry("v1", {"business_object": {"type": "string"}}, ["business_object"])},
     )
     settings = AppSettings()
     settings.tools_spec_path = str(spec)
@@ -179,8 +202,7 @@ def test_spec_hot_reload(tmp_path) -> None:
 
     _write_spec(
         spec,
-        _full_minimal_spec()
-        | {"query_data": _entry("v2", {"business_object": {"type": "string"}}, ["business_object"])},
+        _full_valid_spec() | {"query_data": _entry("v2", {"business_object": {"type": "string"}}, ["business_object"])},
     )
     _bump_mtime(spec)
 
@@ -189,7 +211,7 @@ def test_spec_hot_reload(tmp_path) -> None:
 
 
 def test_spec_no_reload_when_mtime_unchanged(tmp_path) -> None:
-    reg = _registry_with_spec(tmp_path, _full_minimal_spec())
+    reg = _registry_with_spec(tmp_path, _full_valid_spec())
     mtime_before = reg._spec_mtime
     reg.list_tools()
     assert reg._spec_mtime == mtime_before
@@ -201,7 +223,7 @@ def test_spec_reload_failure_keeps_last_valid(tmp_path) -> None:
     spec = tmp_path / "spec.json"
     _write_spec(
         spec,
-        _full_minimal_spec()
+        _full_valid_spec()
         | {"query_data": _entry("good", {"business_object": {"type": "string"}}, ["business_object"])},
     )
     settings = AppSettings()
@@ -217,40 +239,68 @@ def test_spec_reload_failure_keeps_last_valid(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Coverage gate — a spec that doesn't exactly match the handler set is rejected
+# Coverage gate — every entry needs a known kind + a resolvable handler
 # ---------------------------------------------------------------------------
 
 
-def test_spec_missing_handler_entry_rejected(tmp_path) -> None:
-    """A spec missing an entry for a handler fails the coverage check (degraded,
-    since first load)."""
-    spec_obj = _full_minimal_spec()
-    del spec_obj["query_data"]
-    reg = _registry_with_spec(tmp_path, spec_obj)
-    assert reg._tools["query_data"].description == _degraded_description("query_data")
+def test_spec_subset_is_accepted_not_mirrored(tmp_path) -> None:
+    """There is no handler map to mirror any more: a spec with a subset of the
+    bundled tools simply serves that subset."""
+    reg = _registry_with_spec(tmp_path, {"query_data": _bundled_tools()["query_data"]})
+    assert set(reg._tools) == {"query_data"}
+    assert reg._tools["query_data"].description == _bundled_tools()["query_data"]["description"]
 
 
-def test_spec_orphan_entry_rejected(tmp_path) -> None:
-    """A spec entry with no matching handler fails the coverage check."""
-    reg = _registry_with_spec(tmp_path, _full_minimal_spec() | {"no_such_handler": _entry("x", {})})
-    assert "no_such_handler" not in reg._tools
-    # first load failed → every handler is degraded
-    assert reg._tools["query_data"].description == _degraded_description("query_data")
+def test_spec_unknown_kind_rejected(tmp_path) -> None:
+    spec = _full_valid_spec()
+    spec["query_data"] = {**spec["query_data"], "kind": "bogus"}
+    reg = _registry_with_spec(tmp_path, spec)
+    assert reg._tools == {}
+
+
+def test_spec_missing_kind_rejected(tmp_path) -> None:
+    spec = _full_valid_spec()
+    spec["query_data"] = {k: v for k, v in spec["query_data"].items() if k != "kind"}
+    reg = _registry_with_spec(tmp_path, spec)
+    assert reg._tools == {}
+
+
+def test_spec_missing_handler_rejected(tmp_path) -> None:
+    spec = _full_valid_spec()
+    spec["query_data"] = {k: v for k, v in spec["query_data"].items() if k != "handler"}
+    reg = _registry_with_spec(tmp_path, spec)
+    assert reg._tools == {}
+
+
+def test_spec_unresolvable_handler_rejected(tmp_path) -> None:
+    """A handler pointing at a missing attribute fails the load."""
+    spec = _full_valid_spec()
+    spec["query_data"] = {**spec["query_data"], "handler": "mcp_siebel.handlers.records:no_such_func"}
+    reg = _registry_with_spec(tmp_path, spec)
+    assert reg._tools == {}
+
+
+def test_spec_handler_outside_package_rejected(tmp_path) -> None:
+    """A real module+attr outside mcp_siebel.handlers is refused — the resolver
+    only permits handler-package modules."""
+    spec = _full_valid_spec()
+    spec["query_data"] = {**spec["query_data"], "handler": "mcp_siebel.siebel_client:SiebelClient"}
+    reg = _registry_with_spec(tmp_path, spec)
+    assert reg._tools == {}
 
 
 def test_spec_invalid_entry_rejected(tmp_path) -> None:
     """One invalid entry rejects the whole spec (not just that tool)."""
-    spec_obj = _full_minimal_spec()
-    spec_obj["query_data"] = {"description": 123, "input_schema": {"type": "object", "properties": {}}}
-    reg = _registry_with_spec(tmp_path, spec_obj)
-    assert reg._tools["query_data"].description == _degraded_description("query_data")
+    spec = _full_valid_spec()
+    spec["query_data"] = {"description": 123, "input_schema": {"type": "object", "properties": {}}}
+    reg = _registry_with_spec(tmp_path, spec)
+    assert reg._tools == {}
 
 
 def test_spec_duplicate_tool_name_rejected(tmp_path) -> None:
     """Duplicate tool names under ``tools`` are rejected (name uniqueness)."""
     spec = tmp_path / "spec.json"
-    # Raw JSON with a duplicate key — can't be expressed via a Python dict.
-    entry = json.dumps(_entry("a", {"business_object": {"type": "string"}}))
+    entry = json.dumps(_bundled_tools()["query_data"])
     spec.write_text(
         f'{{"$defs": {{}}, "tools": {{"query_data": {entry}, "query_data": {entry}}}}}',
         encoding="utf-8",
@@ -258,11 +308,11 @@ def test_spec_duplicate_tool_name_rejected(tmp_path) -> None:
     settings = AppSettings()
     settings.tools_spec_path = str(spec)
     reg = ToolRegistry(settings)
-    assert reg._tools["query_data"].description == _degraded_description("query_data")
+    assert reg._tools == {}
 
 
 # ---------------------------------------------------------------------------
-# First-load fallback — a missing/corrupt spec degrades but still starts
+# First-load fallback — a missing/corrupt spec serves no tools but still starts
 # ---------------------------------------------------------------------------
 
 
@@ -270,10 +320,8 @@ def test_spec_fallback_on_missing_file(tmp_path) -> None:
     settings = AppSettings()
     settings.tools_spec_path = str(tmp_path / "does-not-exist.json")
     reg = ToolRegistry(settings)
-    names = {t["name"] for t in reg.list_tools()}
-    assert "query_data" in names
-    assert reg._tools["query_data"].input_schema["properties"] == {}
-    assert reg._tools["query_data"].description == _degraded_description("query_data")
+    assert reg._tools == {}
+    assert reg.list_tools() == []
 
 
 def test_spec_fallback_on_corrupt_json(tmp_path) -> None:
@@ -282,6 +330,5 @@ def test_spec_fallback_on_corrupt_json(tmp_path) -> None:
     settings = AppSettings()
     settings.tools_spec_path = str(spec)
     reg = ToolRegistry(settings)
-    names = {t["name"] for t in reg.list_tools()}
-    assert "query_data" in names
-    assert reg._tools["query_data"].description == _degraded_description("query_data")
+    assert reg._tools == {}
+    assert reg.list_tools() == []

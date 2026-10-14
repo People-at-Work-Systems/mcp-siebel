@@ -51,6 +51,7 @@
   "tools": {
     "aggregate_data": {
       "description": "Compute sum, avg, min, max, or count across all matching records.",
+      "handler": "mcp_siebel.handlers.records:_aggregate_data",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -77,10 +78,13 @@
           "operation"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "authenticate": {
+      "always_enabled": true,
       "description": "Authenticate or register a Siebel user for this session.",
+      "handler": "mcp_siebel.handlers.auth:_authenticate",
       "input_schema": {
         "properties": {
           "password": {
@@ -97,10 +101,12 @@
           "password"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "calculate_date": {
       "description": "Resolve a natural-language date expression to MM/DD/YYYY.",
+      "handler": "mcp_siebel.handlers.util:_calculate_date",
       "input_schema": {
         "properties": {
           "expression": {
@@ -112,10 +118,12 @@
           "expression"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "count_records": {
       "description": "Count records matching an optional searchspec.",
+      "handler": "mcp_siebel.handlers.records:_count_records",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -132,10 +140,12 @@
           "business_object"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "create_child_record": {
       "description": "Create child record(s) under a parent record.",
+      "handler": "mcp_siebel.handlers.children:_create_child_record",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -161,10 +171,12 @@
           "data"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "create_record": {
       "description": "Create a new Siebel record.",
+      "handler": "mcp_siebel.handlers.records:_create_record",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -182,10 +194,12 @@
           "data"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "create_record_json": {
       "description": "Create a new Siebel record and return it as structured JSON (the new Id is in the result).",
+      "handler": "mcp_siebel.handlers.records:_create_record_json",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -203,10 +217,12 @@
           "data"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "delete_record": {
       "description": "Delete a Siebel record by Id.",
+      "handler": "mcp_siebel.handlers.records:_delete_record",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -224,10 +240,12 @@
           "id"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "describe_business_object": {
       "description": "Get field schema for a Siebel Business Object/Component.",
+      "handler": "mcp_siebel.handlers.metadata:_describe_business_object",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -241,10 +259,12 @@
           "business_object"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "describe_business_object_json": {
       "description": "REST data API field list for a BC as JSON \u2014 the navigator's result-list columns (reliable; no LOV types).",
+      "handler": "mcp_siebel.handlers.metadata:_describe_business_object_json",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -258,10 +278,12 @@
           "business_object"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "describe_repository": {
       "description": "Query Siebel repository metadata for the full field list of a Business Component. Returns richer data than describe_business_object: pre/post default values, LOV picklist types, calculated field flags, join info, and fields that are valid in searchspec/sort_spec but not returned by the REST data API. Always call this when you need fields not listed by describe_business_object, before create/update to check required field defaults, or when unsure about a field name or picklist values.",
+      "handler": "mcp_siebel.handlers.metadata:_describe_repository",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -275,10 +297,12 @@
           "business_object"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "describe_repository_json": {
       "description": "Field metadata for a BC as JSON (name, type, LOV type, flags) \u2014 for the navigator's filter chips.",
+      "handler": "mcp_siebel.handlers.metadata:_describe_repository_json",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -292,10 +316,12 @@
           "business_object"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "get_list_of_values": {
       "description": "Fetch Siebel List of Values for LOV type codes.",
+      "handler": "mcp_siebel.handlers.metadata:_get_list_of_values",
       "input_schema": {
         "properties": {
           "lov_types": {
@@ -310,10 +336,12 @@
           "lov_types"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "get_query_syntax": {
       "description": "Return Siebel Query Language syntax reference.",
+      "handler": "mcp_siebel.handlers.util:_get_query_syntax",
       "input_schema": {
         "properties": {
           "user_question": {
@@ -325,10 +353,12 @@
           "user_question"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "get_record": {
       "description": "Get a single Siebel record by Id.",
+      "handler": "mcp_siebel.handlers.records:_get_record",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -349,10 +379,12 @@
           "id"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "get_record_with_children": {
       "description": "Get one record with embedded child records.",
+      "handler": "mcp_siebel.handlers.records:_get_record_with_children",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -370,24 +402,30 @@
           "id"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "list_business_objects": {
       "description": "List all available Siebel Business Objects.",
+      "handler": "mcp_siebel.handlers.metadata:_list_business_objects",
       "input_schema": {
         "properties": {},
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "list_business_objects_json": {
       "description": "List all available Siebel Business Objects as structured JSON (for the CRM navigator).",
+      "handler": "mcp_siebel.handlers.metadata:_list_business_objects_json",
       "input_schema": {
         "properties": {},
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "query_child_records": {
       "description": "Query child records under a parent record.",
+      "handler": "mcp_siebel.handlers.children:_query_child_records",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -424,10 +462,12 @@
           "child_business_component"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "query_child_records_json": {
       "description": "Query child records and return structured JSON.",
+      "handler": "mcp_siebel.handlers.children:_query_child_records_json",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -464,10 +504,12 @@
           "child_business_component"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "query_data": {
       "description": "Query Siebel CRM data using a Siebel searchspec expression.",
+      "handler": "mcp_siebel.handlers.records:_query_data",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -496,10 +538,12 @@
           "business_object"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "query_records_json": {
       "description": "Query records and return structured JSON.",
+      "handler": "mcp_siebel.handlers.records:_query_records_json",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -535,10 +579,12 @@
           "business_object"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "update_record": {
       "description": "Update an existing Siebel record by Id.",
+      "handler": "mcp_siebel.handlers.records:_update_record",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -560,10 +606,12 @@
           "data"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "upload_attachment": {
       "description": "Upload a base64 file attachment to a Siebel record.",
+      "handler": "mcp_siebel.handlers.children:_upload_attachment",
       "input_schema": {
         "properties": {
           "attachment_bc": {
@@ -605,10 +653,12 @@
           "file_content_base64"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     },
     "web_search": {
       "description": "Search the web using Brave Search when configured.",
+      "handler": "mcp_siebel.handlers.util:_web_search",
       "input_schema": {
         "properties": {
           "count": {
@@ -624,7 +674,8 @@
           "query"
         ],
         "type": "object"
-      }
+      },
+      "kind": "python"
     }
   }
 }

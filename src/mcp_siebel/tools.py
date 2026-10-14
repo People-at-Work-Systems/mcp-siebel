@@ -1,7 +1,27 @@
-"""MCP-style Siebel tool registry and handlers."""
+"""MCP-style Siebel tool registry.
+
+The registry owns no tool-specific code. Each tool's metadata (description +
+input_schema) and its handler reference (``"kind": "python"`` +
+``"handler": "mcp_siebel.handlers.<module>:<func>"``) come from
+``mcp_siebel/specs/tool_specs.json`` — the single source of truth, hot-reloaded
+by mtime. Handlers live under ``mcp_siebel.handlers`` and are resolved with
+``importlib`` (see ``_resolve_handler``), which permits modules only under that
+package. This file contains no tool names: adding a tool means adding a handler
+module function and a spec entry, nothing here.
+
+The spec may use a top-level ``$defs`` block with ``$ref`` for shared parameter
+definitions; the loader inlines every ``$ref`` before exposing schemas, so
+clients always receive a fully-resolved inputSchema. Every reload re-runs the
+full pipeline (parse with duplicate detection → deref → validate → per-entry
+kind + handler resolution) and only swaps in the new set on success; on any
+failure the last valid set keeps serving and the failure is logged. If the very
+first load fails (no last valid set) no tools are served — the handlers come
+from the spec, so without it the set of tools is unknown.
+"""
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -11,22 +31,21 @@ import uuid
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import date, timedelta
 from importlib.resources import files
-from typing import Any
-
-import httpx
+from typing import TYPE_CHECKING, Any
 
 from .config import AppSettings
-from .schema_cache import SchemaCache
-from .siebel_client import SiebelClient, SiebelError, SiebelRecord
+from .handlers._common import _error, _error_result
+
+if TYPE_CHECKING:
+    # Annotation-only (stringified via ``from __future__ import annotations``):
+    # importing them at runtime would work but isn't needed here, and keeping
+    # them out of the runtime import graph leaves tools.py dependent only on
+    # the handlers._common helpers it actually calls.
+    from .schema_cache import SchemaCache
+    from .siebel_client import SiebelClient
 
 log = logging.getLogger("mcp-siebel")
-
-# Bundled default tool-spec file (description + inputSchema per tool, with shared
-# parameter definitions under top-level $defs referenced via $ref). The registry
-# reads this — or an override at SIEBEL_TOOLS_SPEC_PATH — inlines every $ref,
-# validates, and hot-reloads it by mtime. See ToolRegistry._reload_if_changed.
 
 
 ToolHandler = Callable[[dict[str, Any], "ToolContext"], Awaitable[dict[str, Any]]]
@@ -57,6 +76,12 @@ class ToolSpec:
     description: str
     input_schema: dict[str, Any]
     handler: ToolHandler
+    # True for tools the spec marks ``always_enabled`` — exempt from the
+    # disabled-tools filter so a deployer can't brick the server by listing
+    # them in SIEBEL_DISABLED_TOOLS (the auth-establishment tool is the one
+    # that matters). Authored in the spec, not hard-coded here, so tools.py
+    # stays free of tool names.
+    always_enabled: bool = False
 
 
 class SessionStore:
@@ -119,8 +144,9 @@ def _resolve_spec_path(settings: AppSettings) -> str:
 
 class _SpecError(Exception):
     """Raised when a tool-spec file is unreadable, unparseable, has bad $refs,
-    fails validation, or doesn't cover the handlers exactly. The registry treats
-    any _SpecError as a failed reload and keeps the last valid tool set."""
+    fails validation, or names an unknown kind / unresolvable handler. The
+    registry treats any _SpecError as a failed reload and keeps the last valid
+    tool set (or serves nothing if the first load failed)."""
 
 
 def _no_dup_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -146,7 +172,7 @@ def _deref(node: Any, defs: dict[str, Any], _stack: tuple[str, ...] = ()) -> Any
             prefix = "#/$defs/"
             if not isinstance(ref, str) or not ref.startswith(prefix):
                 raise _SpecError(f"unsupported $ref {ref!r} (only '#/$defs/<name>' is allowed)")
-            name = ref[len(prefix):]
+            name = ref[len(prefix) :]
             if name in _stack:
                 raise _SpecError(f"circular $ref: {' -> '.join([*_stack, name])}")
             if name not in defs:
@@ -159,14 +185,19 @@ def _deref(node: Any, defs: dict[str, Any], _stack: tuple[str, ...] = ()) -> Any
 
 
 def _valid_spec_entry(entry: Any) -> bool:
-    """Pre-deref structural check: an entry must carry a string description and
-    an input_schema dict with a type and a properties map."""
+    """Pre-deref structural check: an entry must carry a string description, a
+    string ``kind``, a string ``handler`` reference, and an input_schema dict
+    with a type and a properties map. ``always_enabled`` is optional but, if
+    present, must be a bool."""
     return (
         isinstance(entry, dict)
         and isinstance(entry.get("description"), str)
         and isinstance(entry.get("input_schema"), dict)
         and isinstance(entry["input_schema"].get("properties"), dict)
         and "type" in entry["input_schema"]
+        and isinstance(entry.get("kind"), str)
+        and isinstance(entry.get("handler"), str)
+        and ("always_enabled" not in entry or isinstance(entry["always_enabled"], bool))
     )
 
 
@@ -183,36 +214,55 @@ def _valid_resolved_schema(schema: Any) -> bool:
     return all(isinstance(p, dict) and "type" in p for p in props.values())
 
 
-def _degraded_spec(name: str, handler: ToolHandler) -> ToolSpec:
-    """Placeholder ToolSpec for when no valid spec has ever loaded — the tool
-    stays callable (its handler is real) but the LLM gets no parameter guidance.
-    Only used at startup before the first successful load; later reload failures
-    keep the last valid set instead."""
-    return ToolSpec(
-        name=name,
-        description=f"Tool '{name}' — spec unavailable (tool_specs.json missing or invalid).",
-        input_schema={"type": "object", "properties": {}},
-        handler=handler,
-    )
+# Kinds the registry knows how to dispatch. ``"python"`` resolves a handler by
+# importlib from the spec's ``"handler"`` field. Future kinds (generic BC
+# query/upsert/delete + business-service executors) will be added here.
+_KNOWN_KINDS: set[str] = {"python"}
+
+# Handler references may only name modules inside this package — the resolver
+# rejects anything outside it so a spec can't pull in arbitrary code.
+_ALLOWED_HANDLER_PKG = "mcp_siebel.handlers"
+
+
+def _resolve_handler(handler_ref: Any) -> ToolHandler:
+    """Resolve a ``"module:func"`` reference to a callable, allowing only
+    modules under ``mcp_siebel.handlers``. Raises ``_SpecError`` on anything
+    malformed, outside the allowed package, unimportable, or not callable — so
+    the registry treats a bad reference as a failed reload and keeps the last
+    valid tool set."""
+    if not isinstance(handler_ref, str) or ":" not in handler_ref:
+        raise _SpecError(f"bad handler reference {handler_ref!r} (expected 'module:func')")
+    module_path, _, attr = handler_ref.partition(":")
+    if not module_path or not attr:
+        raise _SpecError(f"bad handler reference {handler_ref!r}")
+    if not (module_path == _ALLOWED_HANDLER_PKG or module_path.startswith(_ALLOWED_HANDLER_PKG + ".")):
+        raise _SpecError(f"handler module {module_path!r} is not under {_ALLOWED_HANDLER_PKG}")
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError as exc:
+        raise _SpecError(f"could not import handler module {module_path!r}: {exc}") from exc
+    try:
+        handler = getattr(module, attr)
+    except AttributeError as exc:
+        raise _SpecError(f"module {module_path!r} has no attribute {attr!r}") from exc
+    if not callable(handler):
+        raise _SpecError(f"handler {handler_ref!r} is not callable")
+    return handler
 
 
 class ToolRegistry:
-    """Holds the tool map and serves metadata from an external spec file.
+    """Holds the tool map and serves metadata + handlers from an external spec.
 
-    Runtime knows only the handlers (``_build_handlers()`` — name → callable).
-    Each tool's description and input_schema come solely from the spec JSON,
-    which is the single source of truth for metadata. The file may use a
-    top-level ``$defs`` block with ``$ref`` for shared parameter definitions;
-    the loader inlines every ``$ref`` before exposing schemas, so clients always
-    receive a fully-resolved inputSchema.
-
-    The spec is hot-reloaded by mtime — ``list_tools()`` stats the file and
-    re-reads it only when it changed, so edits go live on the next tools/list
-    with no restart. Every reload re-runs the full pipeline (parse with duplicate
-    detection → deref → validate → handler↔spec coverage check) and only swaps in
-    the new set on success; on any failure the last valid set keeps serving and
-    the failure is logged. If the very first load fails (no last valid set), a
-    degraded placeholder is served so the server still starts.
+    The spec is the single source of truth: each entry declares a ``kind`` and a
+    ``handler`` reference, and the registry resolves the handler by importlib
+    (permitting only ``mcp_siebel.handlers`` modules). The file is hot-reloaded
+    by mtime — ``list_tools()`` stats the file and re-reads it only when it
+    changed, so edits go live on the next tools/list with no restart. Every
+    reload re-runs the full pipeline (parse with duplicate detection → deref →
+    validate → per-entry kind + handler resolution) and only swaps in the new
+    set on success; on any failure the last valid set keeps serving and the
+    failure is logged. If the very first load fails there is no last valid set,
+    so no tools are served until a valid spec appears.
     """
 
     def __init__(self, settings: AppSettings) -> None:
@@ -220,14 +270,16 @@ class ToolRegistry:
         self._spec_path = _resolve_spec_path(settings)
         self._spec_mtime: float | None = None
         self._lock = threading.Lock()
-        self._handlers = _build_handlers()
         self._tools: dict[str, ToolSpec] = {}
         self._reload_if_changed()
 
     def _load_valid_tools(self) -> dict[str, ToolSpec]:
-        """Read, parse, deref, validate, and coverage-check the spec file. Returns
-        a fresh ``name → ToolSpec`` map on success; raises ``_SpecError`` on any
-        failure so the caller can keep the last valid set."""
+        """Read, parse, deref, validate, and resolve handlers for the spec file.
+        Returns a fresh ``name → ToolSpec`` map on success; raises
+        ``_SpecError`` on any failure so the caller can keep the last valid
+        set. Every entry must declare a known ``kind`` and a resolvable
+        ``handler`` — a single bad entry rejects the whole reload so a
+        half-edited spec never partially replaces a good one."""
         try:
             with open(self._spec_path, encoding="utf-8") as fh:
                 data = json.loads(fh.read(), object_pairs_hook=_no_dup_pairs)
@@ -242,22 +294,17 @@ class ToolRegistry:
             raise _SpecError("'$defs' must be an object")
         tools_data: dict[str, Any] = data["tools"]
 
-        # Handler↔spec coverage must be exact: every handler has a spec entry and
-        # there are no orphan entries. A mismatch rejects the whole reload so a
-        # half-edited spec never partially replaces a good one.
-        handler_names = set(self._handlers)
-        spec_names = set(tools_data)
-        missing = handler_names - spec_names
-        if missing:
-            raise _SpecError(f"handlers without a spec entry: {sorted(missing)}")
-        orphaned = spec_names - handler_names
-        if orphaned:
-            raise _SpecError(f"spec entries without a handler: {sorted(orphaned)}")
-
         built: dict[str, ToolSpec] = {}
         for name, entry in tools_data.items():
             if not _valid_spec_entry(entry):
                 raise _SpecError(f"invalid entry for {name!r}")
+            kind = entry["kind"]
+            if kind not in _KNOWN_KINDS:
+                raise _SpecError(f"unknown kind {kind!r} for {name!r} (known: {sorted(_KNOWN_KINDS)})")
+            try:
+                handler = _resolve_handler(entry["handler"])
+            except _SpecError as exc:
+                raise _SpecError(f"handler error in {name!r}: {exc}") from exc
             try:
                 schema = _deref(entry["input_schema"], defs)
             except _SpecError as exc:
@@ -268,14 +315,15 @@ class ToolRegistry:
                 name=name,
                 description=entry["description"],
                 input_schema=schema,
-                handler=self._handlers[name],
+                handler=handler,
+                always_enabled=bool(entry.get("always_enabled", False)),
             )
         return built
 
     def _reload_if_changed(self) -> None:
         """Re-read the spec file if its mtime changed since the last load. On a
         successful reload, swap in the new tool set; on failure, keep the last
-        valid set (or degrade if there isn't one yet)."""
+        valid set (or serve nothing if there isn't one yet)."""
         with self._lock:
             try:
                 mtime = os.stat(self._spec_path).st_mtime_ns
@@ -283,8 +331,7 @@ class ToolRegistry:
                 if self._tools:
                     log.warning("Tool spec file unavailable: %s — keeping current tools", self._spec_path)
                 else:
-                    log.warning("Tool spec file unavailable: %s — serving degraded specs", self._spec_path)
-                    self._tools = {n: _degraded_spec(n, h) for n, h in self._handlers.items()}
+                    log.warning("Tool spec file unavailable: %s — no tools loaded", self._spec_path)
                 self._spec_mtime = None
                 return
             if mtime == self._spec_mtime:
@@ -299,13 +346,27 @@ class ToolRegistry:
                 if self._tools:
                     log.warning("Tool spec reload failed — keeping current tools (%s): %s", exc, self._spec_path)
                 else:
-                    log.warning("Tool spec load failed — serving degraded specs (%s): %s", exc, self._spec_path)
-                    self._tools = {n: _degraded_spec(n, h) for n, h in self._handlers.items()}
+                    log.warning("Tool spec load failed — no tools loaded (%s): %s", exc, self._spec_path)
                 return
 
             self._tools = built
             self._spec_mtime = mtime
             log.info("Loaded %d tool specs from %s", len(built), self._spec_path)
+            self._warn_disabled_always_enabled(built)
+
+    def _warn_disabled_always_enabled(self, built: dict[str, ToolSpec]) -> None:
+        """Log a clear warning for every always-enabled tool that
+        SIEBEL_DISABLED_TOOLS tried to disable — the filter ignores those
+        entries, so the deployer hears about the misconfiguration instead of
+        silently getting the tool back."""
+        disabled = {name.lower() for name in self.settings.disabled_tools}
+        for name, spec in built.items():
+            if spec.always_enabled and name.lower() in disabled:
+                log.warning(
+                    "SIEBEL_DISABLED_TOOLS lists %r, but the spec marks it always_enabled — "
+                    "ignored (always_enabled tools cannot be disabled).",
+                    name,
+                )
 
     def list_tools(self) -> list[dict[str, Any]]:
         self._reload_if_changed()
@@ -313,14 +374,14 @@ class ToolRegistry:
         return [
             {"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
             for tool in self._tools.values()
-            if tool.name == "authenticate" or tool.name.lower() not in disabled
+            if tool.always_enabled or tool.name.lower() not in disabled
         ]
 
     async def call(self, name: str, arguments: dict[str, Any], session: SessionContext | None) -> dict[str, Any]:
         tool = self._tools.get(name)
         if tool is None:
             return _error(f'Unknown tool "{name}".')
-        if name != "authenticate" and name.lower() in {item.lower() for item in self.settings.disabled_tools}:
+        if not tool.always_enabled and name.lower() in {item.lower() for item in self.settings.disabled_tools}:
             return _error(f'Tool "{name}" is disabled.')
         log.debug("Calling tool %s with args %s", name, list(arguments.keys()))
         try:
@@ -330,1097 +391,3 @@ class ToolRegistry:
         if result.get("isError"):
             log.warning("Tool %s returned isError — content: %s", name, result.get("content"))
         return result
-
-
-def _build_handlers() -> dict[str, ToolHandler]:
-    """Runtime handler map: tool name → callable.
-
-    This is the ONLY tool information that lives in Python. Each tool's
-    description and input_schema are authored in the spec JSON
-    (``mcp_siebel/specs/tool_specs.json``, overridable via
-    ``SIEBEL_TOOLS_SPEC_PATH``) — edit that file to change what clients see; the
-    registry hot-reloads it. Adding a new tool means adding a handler here AND a
-    matching entry in the spec; the reload's coverage check rejects a spec that
-    doesn't match this set exactly.
-    """
-    return {
-        "authenticate": _authenticate,
-        "list_business_objects": _list_business_objects,
-        "describe_business_object": _describe_business_object,
-        "describe_business_object_json": _describe_business_object_json,
-        "describe_repository": _describe_repository,
-        "list_business_objects_json": _list_business_objects_json,
-        "describe_repository_json": _describe_repository_json,
-        "query_data": _query_data,
-        "query_records_json": _query_records_json,
-        "count_records": _count_records,
-        "aggregate_data": _aggregate_data,
-        "get_record": _get_record,
-        "get_record_with_children": _get_record_with_children,
-        "create_record": _create_record,
-        "create_record_json": _create_record_json,
-        "update_record": _update_record,
-        "delete_record": _delete_record,
-        "query_child_records": _query_child_records,
-        "query_child_records_json": _query_child_records_json,
-        "create_child_record": _create_child_record,
-        "upload_attachment": _upload_attachment,
-        "get_list_of_values": _get_list_of_values,
-        "get_query_syntax": _get_query_syntax,
-        "calculate_date": _calculate_date,
-        "web_search": _web_search,
-    }
-
-
-
-
-async def _authenticate(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    session = ctx.session
-    if session is None:
-        return _error("No session was provided.")
-    username = str(args.get("username") or "")
-    password = args.get("password")
-    if not username:
-        return _error("Authentication failed: username is required.")
-    if ctx.settings.demo_enabled:
-        session.username = username
-        session.demo_authenticated = True
-        return _text(f"Demo mode active for {username}. All data shown is sample data.")
-    if ctx.settings.mcp_mode == "standalone" and not password:
-        return _error("Authentication failed: password is required in standalone mode.")
-
-    # The persistent client is always the SSO (header-based) client — every
-    # subsequent data call authenticates via the SSO header, not the password —
-    # so the SSO path is what actually determines whether data calls will work.
-    client = _sso_client(ctx.settings, username)
-
-    if ctx.settings.mcp_mode == "standalone":
-        # Probe the SSO identity with a real data query and treat ANY failure as
-        # auth failure. The catalogue (/data/describe) is guest-accessible on
-        # some Siebel instances and can't validate the identity — a bogus header
-        # still gets a 200 there — so we query the configured probe BO/BC: a 200
-        # means the SSO header is trusted, any error means it isn't. (The old
-        # Basic probe would "proceed anyway" on a 500 and report a false
-        # "Authenticated".)
-        try:
-            await client.query(
-                ctx.settings.probe_business_object,
-                ctx.settings.probe_business_component,
-                page_size=1,
-            )
-        except SiebelError as exc:
-            log.warning(
-                "SSO probe failed for '%s' (BO/BC %s/%s): HTTP %s — %s",
-                username,
-                ctx.settings.probe_business_object,
-                ctx.settings.probe_business_component,
-                exc.status_code,
-                exc.response_body[:200] if exc.response_body else "",
-            )
-            return _error(f"Authentication failed: could not establish a Siebel session for '{username}'.")
-        except Exception as exc:  # noqa: BLE001 — transport errors aren't SiebelError
-            log.warning("SSO probe error for '%s': %s", username, exc)
-            return _error(f"Authentication failed: could not reach Siebel for '{username}'.")
-
-    session.username = username
-    session.client = client
-    session.cache = SchemaCache(client)
-    return _text(f"Authenticated as {username}. You can now use all Siebel tools.")
-
-
-async def _list_business_objects(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    objects = await auth.cache.get_business_objects()
-    return _text(f"Available Business Objects ({len(objects)}):\n" + "\n".join(f"  - {item}" for item in objects))
-
-
-async def _describe_business_object(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    bo = str(args["business_object"])
-    resolved = await auth.cache.resolve_business_object(bo)
-    if not resolved:
-        return _text(f'Business Object "{bo}" not found. Use list_business_objects to see available options.')
-    bc = str(args.get("business_component") or resolved)
-    try:
-        descriptor = await auth.cache.get_descriptor(resolved, bc)
-    except SiebelError as exc:
-        # The requested BC isn't part of `resolved`'s Integration Object —
-        # most often the model described a *child* component, e.g.
-        # describe_business_object(Account, Contact). Contact lives in its
-        # own Business Object, so retry describing it under its own BO
-        # instead of returning a 50257 "not mapped" error. Skip the retry
-        # when the BC is the BO itself (nothing to fall back to).
-        if "SBL-EAI-50257" not in exc.response_body or bc.lower() == resolved.lower():
-            return _error_result(exc, "describe_business_object")
-        own_bo = await auth.cache.resolve_business_object(bc)
-        if not own_bo or own_bo.lower() == resolved.lower():
-            return _error_result(exc, "describe_business_object")
-        try:
-            descriptor = await auth.cache.get_descriptor(own_bo, bc)
-        except SiebelError as retry_exc:
-            return _error_result(retry_exc, "describe_business_object")
-        # The describe actually ran under the BC's own BO; reflect that in
-        # the header so the field list isn't mislabelled as the parent BO's.
-        resolved = own_bo
-    return _text(
-        f"{resolved} / {bc}\n\n{auth.cache.field_summary(descriptor)}\n\n"
-        f"Total fields: {len(descriptor.fields)}"
-    )
-
-
-async def _describe_business_object_json(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """Structured-JSON variant of describe_business_object — the REST data API
-    field list (the same source the dashboard render uses successfully). More
-    reliable than describe_repository on instances where the workspace metadata
-    API + Repository BC fallback return nothing. Used by the CRM navigator for
-    the result-list columns + the name field. No LOV types here — those come
-    from describe_repository_json (best-effort) where available."""
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    bo = str(args["business_object"])
-    resolved = await auth.cache.resolve_business_object(bo)
-    if not resolved:
-        return _error(f'Business Object "{bo}" not found. Use list_business_objects to see available options.')
-    bc = str(args.get("business_component") or resolved)
-    try:
-        descriptor = await auth.cache.get_descriptor(resolved, bc)
-    except SiebelError as exc:
-        return _error_result(exc, "describe_business_object_json")
-    return _json_text(
-        {
-            "business_object": resolved,
-            "business_component": bc,
-            "fields": [
-                {
-                    "name": f.name,
-                    "type": f.type,
-                    "required": f.required,
-                    "read_only": f.read_only,
-                    "max_length": f.max_length,
-                }
-                for f in descriptor.fields
-            ],
-        }
-    )
-
-
-async def _describe_repository(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    bo = str(args["business_object"])
-    resolved = await auth.cache.resolve_business_object(bo)
-    if not resolved:
-        return _text(f'Business Object "{bo}" not found. Use list_business_objects to see available options.')
-    bc = str(args.get("business_component") or resolved)
-
-    fields = await auth.client.describe_repository_bc(resolved, bc)
-    if not fields:
-        return _text(
-            f'No repository metadata found for {resolved}/{bc}. '
-            "The workspace metadata API may not be accessible. "
-            "Use describe_business_object for the REST field list instead."
-        )
-
-    lines = [f"Repository metadata: {resolved} / {bc}", f"Total fields: {len(fields)}", ""]
-    for f in sorted(fields, key=lambda x: str(x.get("Name", ""))):
-        name = f.get("Name", "")
-        ftype = f.get("Type", "")
-        length = f.get("Length") or f.get("length") or ""
-        flags = []
-        if str(f.get("Required", "")).upper() in ("Y", "TRUE", "1"):
-            flags.append("Required")
-        if str(f.get("ReadOnly", "")).upper() in ("Y", "TRUE", "1"):
-            flags.append("ReadOnly")
-        if str(f.get("Calculated", "")).upper() in ("Y", "TRUE", "1"):
-            flags.append("Calculated")
-        pre = f.get("PreDefaultValue") or ""
-        post = f.get("PostDefaultValue") or ""
-        lov = f.get("LOVType") or f.get("LOV Type") or ""
-        join = f.get("JoinName") or f.get("Join") or ""
-
-        detail_parts = []
-        if length:
-            detail_parts.append(f"len={length}")
-        if flags:
-            detail_parts.append(", ".join(flags))
-        if lov:
-            detail_parts.append(f"LOV={lov}")
-        if join:
-            detail_parts.append(f"Join={join}")
-        if pre:
-            detail_parts.append(f"PreDefault={pre!r}")
-        if post:
-            detail_parts.append(f"PostDefault={post!r}")
-
-        detail = f"  [{', '.join(detail_parts)}]" if detail_parts else ""
-        lines.append(f"  {name} ({ftype}){detail}")
-
-    return _text("\n".join(lines))
-
-
-async def _list_business_objects_json(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """Structured-JSON variant of list_business_objects. The prose variant
-    renders a text list, which is fine for the LLM but not for a caller that
-    needs the array."""
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    objects = await auth.cache.get_business_objects()
-    return _json_text({"business_objects": objects})
-
-
-async def _describe_repository_json(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """Structured-JSON variant of describe_repository. Returns per-field name,
-    type, LOV type (so the caller can fetch LOV values), and flags — not the
-    prose field list the LLM-oriented variant renders."""
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    bo = str(args["business_object"])
-    resolved = await auth.cache.resolve_business_object(bo)
-    if not resolved:
-        return _error(f'Business Object "{bo}" not found. Use list_business_objects to see available options.')
-    bc = str(args.get("business_component") or resolved)
-    fields = await auth.client.describe_repository_bc(resolved, bc)
-    return _json_text(
-        {
-            "business_object": resolved,
-            "business_component": bc,
-            "fields": [
-                {
-                    "name": f.get("Name", ""),
-                    "type": f.get("Type", ""),
-                    "lov_type": f.get("LOVType") or f.get("LOV Type") or "",
-                    "required": str(f.get("Required", "")).upper() in ("Y", "TRUE", "1"),
-                    "read_only": str(f.get("ReadOnly", "")).upper() in ("Y", "TRUE", "1"),
-                    "calculated": str(f.get("Calculated", "")).upper() in ("Y", "TRUE", "1"),
-                    "max_length": f.get("Length") or f.get("length"),
-                }
-                for f in fields
-            ],
-        }
-    )
-
-
-async def _query_data(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    result = await _query(args, ctx)
-    if isinstance(result, dict) and "items" not in result:
-        return result
-    rows = [
-        f"Record {result['offset'] + idx + 1}:\n{_format_record(item)}"
-        for idx, item in enumerate(result["items"])
-    ]
-    total = result.get("totalCount")
-    count_info = f"Total: {total}" if total is not None else f"Returned: {len(result['items'])}"
-    more = (
-        f"Has more: YES - call again with offset={result.get('nextStartRow')}"
-        if result.get("hasMore")
-        else "Has more: NO (end of results)"
-    )
-    return _text(
-        f"{count_info} | Page size: {result['pageSize']} | {more}\n\n"
-        + ("\n\n".join(rows) or "(no records found)")
-    )
-
-
-async def _query_records_json(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    result = await _query(args, ctx)
-    return result if "items" not in result else _json_text(result)
-
-
-async def _count_records(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    args = {**args, "page_size": 1}
-    result = await _query(args, ctx)
-    if "items" not in result:
-        return result
-    total = result.get("totalCount")
-    return _text(f"Total records: **{total}**" if total is not None else "Count not available.")
-
-
-async def _aggregate_data(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved = await auth.cache.resolve_business_object(str(args["business_object"]))
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    bc = str(args.get("business_component") or resolved)
-    field = str(args["field"])
-    operation = str(args["operation"])
-    if operation not in {"sum", "avg", "min", "max", "count"}:
-        return _error("operation must be one of: sum, avg, min, max, count.")
-    offset = 0
-    record_count = 0
-    values: list[float] = []
-    truncated = False
-    for page in range(ctx.settings.aggregate_max_pages):
-        try:
-            result = await auth.client.query(
-                resolved,
-                bc,
-                search_spec=args.get("searchspec"),
-                fields=[field] if operation != "count" else None,
-                page_size=ctx.settings.aggregate_page_size,
-                offset=offset,
-            )
-        except SiebelError as exc:
-            if exc.status_code == 404:
-                break
-            return _error_result(exc)
-        record_count += len(result.items)
-        if operation != "count":
-            for item in result.items:
-                try:
-                    values.append(float(item[field]))
-                except (KeyError, TypeError, ValueError):
-                    pass
-        if not result.has_more or result.next_start_row is None:
-            break
-        offset = result.next_start_row
-    else:
-        truncated = True
-    if operation == "count":
-        value: float = float(record_count)
-    elif not values:
-        return _text(f'No numeric values found in field "{field}" across {record_count} records.')
-    elif operation == "sum":
-        value = sum(values)
-    elif operation == "avg":
-        value = sum(values) / len(values)
-    elif operation == "min":
-        value = min(values)
-    else:
-        value = max(values)
-    suffix = f"\nResult truncated after {ctx.settings.aggregate_max_pages} pages." if truncated else ""
-    rendered = f"{int(value):,}" if value.is_integer() else f"{value:,.2f}"
-    return _text(f"{resolved}/{bc}.{field} {operation}: **{rendered}**\nRecords processed: {record_count}{suffix}")
-
-
-# Cap on the fallback's field list. Asking for every described field can itself
-# be rejected, so take a workable subset — chosen by usefulness, not by
-# descriptor order (see _rank_fallback_fields).
-_MAX_FALLBACK_FIELDS = 40
-
-# Who/what the record is: without these it is unidentifiable.
-_IDENTIFYING_FIELD_HINTS = ("name", "number", "abstract", "subject", "title")
-# How to reach the person. Kept as its own tier above the qualifying fields —
-# lumped together, broad hints like "account" and "date" matched filler
-# (Account Currency Code, Birth Date) and crowded out the email and phone.
-_CONTACT_FIELD_HINTS = ("email", "phone", "mobile", "cellular")
-# Where the record is. Its own tier because an address is only useful whole:
-# with "city"/"country" as mere qualifiers, street, state and postal code sat
-# unhinted and dropped out, and a contact came back with no address at all.
-# Checked after the contact hints so "Email Address" stays a contact detail.
-_ADDRESS_FIELD_HINTS = ("street", "address", "city", "state", "postal", "zip", "province", "country")
-# Useful qualifiers once the record is identified, reachable and located.
-_QUALIFYING_FIELD_HINTS = (
-    "status",
-    "type",
-    "stage",
-    "priority",
-    "owner",
-    "revenue",
-    "close date",
-    "account",
-)
-# Yes/no flags and foreign keys. Siebel names them like the real thing —
-# "Suppress All Emails" and "Email SR Updates Flag" both read as contact
-# details to a keyword match — but nobody asks for them, and the prompt is
-# forbidden from displaying Ids at all. The DTYPE says what a name cannot.
-_LOW_VALUE_FIELD_TYPES = ("DTYPE_BOOL", "DTYPE_ID")
-
-
-def _rank_fallback_fields(
-    names: list[str], limit: int = _MAX_FALLBACK_FIELDS, types: dict[str, str] | None = None
-) -> list[str]:
-    """Pick the most useful `limit` field names.
-
-    Siebel describes fields alphabetically, so taking a plain prefix returns
-    whatever sorts early — for Contact that was Accomplishments, Account
-    Currency Code and Active Status, with Last Name and Email Address falling
-    outside the cap entirely. Rank by what identifies a record instead, keeping
-    descriptor order within a tier so results stay predictable.
-
-    `types` maps field name → Siebel DTYPE where known; it demotes flags and
-    foreign keys that a name-only ranking mistakes for content.
-    """
-    types = types or {}
-
-    def tier(name: str) -> int:
-        n = name.lower()
-        if n == "id":
-            return 0
-        if types.get(name, "").upper() in _LOW_VALUE_FIELD_TYPES:
-            return 6
-        if any(h in n for h in _IDENTIFYING_FIELD_HINTS):
-            return 1
-        if any(h in n for h in _CONTACT_FIELD_HINTS):
-            return 2
-        if any(h in n for h in _ADDRESS_FIELD_HINTS):
-            return 3
-        if any(h in n for h in _QUALIFYING_FIELD_HINTS):
-            return 4
-        return 5
-
-    # sorted() is stable, so equal tiers keep their original order.
-    return sorted(names, key=tier)[:limit]
-
-
-# Read fields per Business Component, ordered the way someone reads a record:
-# who it is, then how to reach them, where they are, and the qualifying detail.
-# For the objects we know, naming the fields beats ranking 190 keyword-scored
-# names — the ranking is a heuristic and the demo instance kept proving it
-# (a Contact came back with two opt-out flags and no address).
-#
-# Mirrors a caller-side preferred-fields list, which does
-# the same job for the navigator. Treated as an ordered *preference list*,
-# intersected with the fields the BC actually reports: naming a field this
-# deployment lacks must cost one field, never the whole read (Siebel answers
-# HTTP 400 for an unknown field). Contact's names are confirmed against the
-# demo instance's describe output; the rest are standard Siebel names.
-_PREFERRED_FIELDS: dict[str, tuple[str, ...]] = {
-    "Contact": (
-        "Last Name",
-        "First Name",
-        "Middle Name",
-        "Job Title",
-        "Primary Account Name",
-        "Work Phone #",
-        "Cellular Phone #",
-        "Home Phone #",
-        "Fax Phone #",
-        "Email Address",
-        "Primary Street Address",
-        "Primary City",
-        "Primary State",
-        "Primary Postal Code",
-        "Primary Country",
-        "Status",
-        "Comment",
-    ),
-    "Account": (
-        "Name",
-        "Account Status",
-        "Type",
-        "Main Phone Number",
-        "Main Fax Number",
-        "Home Page",
-        "Primary Account Street Address",
-        "Primary Account City",
-        "Primary Account State",
-        "Primary Account Postal Code",
-        "Primary Account Country",
-        "Primary Organization",
-        "Annual Revenue",
-        "Employees",
-    ),
-    "Opportunity": (
-        "Name",
-        "Account",
-        "Sales Stage",
-        "Primary Revenue Amount",
-        "Primary Revenue Close Date",
-        "Win Probability",
-        "Primary Organization",
-        "Sales Method",
-        "Description",
-    ),
-    "Service Request": (
-        "SR Number",
-        "Abstract",
-        "Status",
-        "Substatus",
-        "Priority",
-        "Severity",
-        "Account",
-        "Contact Last Name",
-        "Contact First Name",
-        "Owner",
-        "Description",
-    ),
-}
-
-
-def _read_fields(business_component: str, described: list[Any]) -> list[str]:
-    """The field list to read a whole record with.
-
-    Curated order where the object is known, ranked heuristics otherwise — and
-    ranked too when a curated list matches nothing, so a deployment that
-    renamed its fields still gets a usable record instead of an empty read.
-    """
-    available = {f.name for f in described if f.name}
-    curated = [f for f in _PREFERRED_FIELDS.get(business_component, ()) if f in available]
-    if curated:
-        # Follow-up tool calls need the Id even though the prompt never shows it.
-        return [*curated, "Id"] if "Id" in available else curated
-    return _rank_fallback_fields(
-        [f.name for f in described if f.name], types={f.name: f.type for f in described if f.name}
-    )
-
-
-def _ordered_record(record: SiebelRecord, fields: Any) -> SiebelRecord:
-    """Reorder a record to the field order it was requested in.
-
-    Siebel returns fields in its own order — the read that prompted this put
-    "Suppress All Emails" first and the name fourth. The system prompt tells
-    the model to report fields in the order they came back, so that order has
-    to be worth following. Anything Siebel returned but we didn't ask for
-    keeps its place at the end rather than being dropped.
-    """
-    if not fields:
-        return record
-    wanted = [f.strip() for f in (fields.split(",") if isinstance(fields, str) else fields)]
-    ordered = {name: record[name] for name in wanted if name in record}
-    ordered.update({k: v for k, v in record.items() if k not in ordered})
-    return ordered
-
-
-async def _record_via_query(
-    auth: Any, business_object: str, business_component: str, record_id: str, fields: Any
-) -> Any:
-    """Fetch a single record by Id with an explicit field list.
-
-    The direct `/data/{BO}/{BC}/{id}` read asks Siebel for the whole record. On
-    an instance whose integration component names a field the business
-    component doesn't define, Siebel 500s while serialising it — e.g. Contact
-    referencing 'Primary Address Integration Id' (SBL-DAT-00398). Naming the
-    fields sidesteps the broken one, which is why the navigator can display a
-    record the direct read cannot return.
-    """
-    if not fields:
-        descriptor = await auth.client.describe_bc(business_object, business_component)
-        usable = [f for f in descriptor.fields if f.name and not _is_audit_field(f.name)]
-        fields = _read_fields(business_component, usable)
-    safe_id = str(record_id).replace("'", "''")
-    result = await auth.client.query(
-        business_object,
-        business_component,
-        search_spec=f"[Id]='{safe_id}'",
-        fields=fields,
-        page_size=1,
-    )
-    items = getattr(result, "items", None) or []
-    return _ordered_record(items[0], fields) if items else None
-
-
-def _is_audit_field(name: str) -> bool:
-    n = name.lower()
-    return any(h in n for h in ("created", "updated", "last upd", "conflict", "integration id"))
-
-
-async def _get_record(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    bad_fields = _validate_fields_arg(args.get("fields"))
-    if bad_fields:
-        return _error(bad_fields)
-    fields = args.get("fields")
-    try:
-        record = await auth.client.get_record(resolved, bc, str(args["id"]), fields)
-    except SiebelError as exc:
-        # A 404 already comes back as None, so an exception here means the read
-        # itself failed. Retry naming the fields before giving up: a
-        # misconfigured integration component shouldn't make a record
-        # unreadable when a scoped query can read it. If that fails too, the
-        # original Siebel error propagates — it names the offending field,
-        # which is what an administrator needs.
-        log.warning("get_record direct read failed (%s); retrying as a scoped query", exc)
-        record = await _record_via_query(auth, resolved, bc, str(args["id"]), fields)
-        if record is None:
-            raise
-    if not record:
-        return _text("No record found.")
-    return _text(f"{resolved}/{bc} record {args['id']}:\n{_format_record(record)}")
-
-
-async def _get_record_with_children(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    record = await auth.client.get_record_with_children(resolved, bc, str(args["id"]))
-    if not record:
-        return _text("No record found.")
-    return _text(f"{resolved}/{bc} record {args['id']}:\n{_format_hierarchical_record(record)}")
-
-
-async def _create_record(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    data = args.get("data")
-    if not isinstance(data, dict) or not data:
-        return _error('The "data" parameter is required and must be a non-empty object.')
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    result = await auth.client.create_record(resolved, bc, data)
-    return _text(f"Created record in {resolved}/{bc}:\n{_format_record(result)}")
-
-
-async def _create_record_json(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """The JSON-returning twin of _create_record — same create, but returns
-    _json_text(result) so a caller can read the new record's Id
-    programmatically (mirrors query_records_json vs query_data)."""
-    data = args.get("data")
-    if not isinstance(data, dict) or not data:
-        return _error('The "data" parameter is required and must be a non-empty object.')
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    result = await auth.client.create_record(resolved, bc, data)
-    return _json_text(result)
-
-
-async def _update_record(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    result = await auth.client.update_record(resolved, bc, str(args["id"]), args["data"])
-    return _text(f"Updated record {args['id']} in {resolved}/{bc}:\n{_format_record(result)}")
-
-
-async def _delete_record(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    await auth.client.delete_record(resolved, bc, str(args["id"]))
-    return _text(f"Deleted record {args['id']} from {resolved}/{bc}.")
-
-
-async def _query_child_records(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    result = await _query_child(args, ctx)
-    if "items" not in result:
-        return result
-    rows = [f"Record {result['offset'] + idx + 1}:\n{_format_record(item)}" for idx, item in enumerate(result["items"])]
-    return _text("\n\n".join(rows) or "(no child records found)")
-
-
-async def _query_child_records_json(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    result = await _query_child(args, ctx)
-    return result if "items" not in result else _json_text(result)
-
-
-async def _create_child_record(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    result = await auth.client.create_child_record(
-        resolved, bc, str(args["parent_id"]), str(args["child_business_component"]), args["data"]
-    )
-    return _text(f"Created child record(s) under {resolved}/{bc}/{args['parent_id']}:\n{_format_record(result)}")
-
-
-async def _upload_attachment(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    descriptor = await auth.cache.get_descriptor(resolved, str(args["attachment_bc"]))
-    names = [field.name for field in descriptor.fields]
-    file_name_field = next((name for name in names if name.endswith("FileName")), None)
-    file_ext_field = next((name for name in names if name.endswith("FileExt")), None)
-    if not file_name_field or not file_ext_field:
-        return _error(f"Could not find FileName/FileExt fields in {args['attachment_bc']}.")
-    await auth.client.upload_attachment(
-        resolved,
-        bc,
-        str(args["parent_id"]),
-        str(args["attachment_bc"]),
-        file_name_field,
-        file_ext_field,
-        str(args["file_name"]),
-        str(args["file_ext"]),
-        str(args["file_content_base64"]),
-        args.get("comment"),
-    )
-    return _text(f"Attachment uploaded successfully: {args['file_name']}.{args['file_ext']}")
-
-
-async def _get_list_of_values(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    lov_types = args.get("lov_types") or []
-    inputs = {
-        "body": {
-            "ListsTopElementQuery": {
-                "MessageId": "",
-                "MessageType": "Integration Object",
-                "IntObjectName": "List Query",
-                "IntObjectFormat": "Siebel Hierarchical",
-                "ListOfList Query": {
-                    "List": [
-                        {"Active": "Y", "Language Code": ctx.settings.language_code, "Type": lov_type}
-                        for lov_type in lov_types
-                    ]
-                },
-            }
-        }
-    }
-    response = await auth.client.call_business_service("EAILOVService", "GetListOfValues", inputs)
-    entries = (((response or {}).get("ListsTopElementResult") or {}).get("List") or [])
-    result: dict[str, list[str]] = {lov_type: [] for lov_type in lov_types}
-    for entry in entries:
-        values = (entry.get("List Value") or []) if isinstance(entry, dict) else []
-        result[str(entry.get("Type"))] = [
-            str(value.get("Display Value", "")) for value in values if isinstance(value, dict)
-        ]
-    return _json_text(result)
-
-
-async def _get_query_syntax(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    return _text(
-        "Use <> for not equal; never use !=.\n"
-        "Field names go in square brackets: [Status] = 'Open'.\n"
-        "Use LIKE with * wildcards: [Name] LIKE 'Acme*'.\n"
-        "Combine with AND/OR and parenthesize compound expressions.\n"
-        "Dates may use Today(), Timestamp(), and arithmetic such as Today()-30.\n"
-        "Siebel may return 404 when a query has no records."
-    )
-
-
-async def _calculate_date(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    expr = str(args.get("expression", "")).strip().lower()
-    today = date.today()
-    weekdays = {"sunday": 6, "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5}
-    result: date | None = None
-    if expr == "today":
-        result = today
-    elif expr == "tomorrow":
-        result = today + timedelta(days=1)
-    elif expr == "yesterday":
-        result = today - timedelta(days=1)
-    elif expr.startswith("next "):
-        target = weekdays.get(expr.removeprefix("next "))
-        if target is not None:
-            result = today + timedelta(days=((target - today.weekday()) % 7) or 7)
-    elif expr.startswith("in ") and expr.endswith(" days"):
-        result = today + timedelta(days=int(expr.split()[1]))
-    elif expr == "end of month":
-        result = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
-    if result is None:
-        return _error(f'Could not parse date expression: "{args.get("expression")}".')
-    return _text(result.strftime("%m/%d/%Y (%A)"))
-
-
-async def _web_search(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    if not ctx.settings.brave_search_api_key:
-        return _error("Web search is not configured. Set BRAVE_SEARCH_API_KEY.")
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.get(
-            "https://api.search.brave.com/res/v1/web/search",
-            params={"q": args["query"], "count": int(args.get("count") or 5)},
-            headers={"Accept": "application/json", "X-Subscription-Token": ctx.settings.brave_search_api_key},
-        )
-    if response.status_code >= 400:
-        return _error(f"Brave Search API error: {response.status_code}")
-    results = ((response.json().get("web") or {}).get("results") or [])
-    lines = []
-    for item in results:
-        lines.extend([f"**{item.get('title')}**", f"URL: {item.get('url')}", str(item.get("description") or ""), ""])
-    return _text("\n".join(lines) or f'No results found for: "{args["query"]}"')
-
-
-_FIELD_ERROR_CODES = {"SBL-EAI-50258", "SBL-EAI-50297"}
-
-
-def _is_field_error(exc: SiebelError) -> bool:
-    return exc.status_code == 500 and any(code in exc.response_body for code in _FIELD_ERROR_CODES)
-
-
-async def _query(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    # Reject placeholder field tokens (e.g. '<?>') the LLM emits when it
-    # doesn't know real field names — sending them to Siebel wastes a 50258
-    # round-trip and the subsequent retry hits Siebel's (sometimes broken)
-    # default field set. Tell the model to describe the BC first instead.
-    bad_fields = _validate_fields_arg(args.get("fields"))
-    if bad_fields:
-        return _error(bad_fields)
-    try:
-        result = await auth.client.query(
-            resolved,
-            bc,
-            search_spec=args.get("searchspec"),
-            fields=args.get("fields"),
-            sort_spec=args.get("sort_spec"),
-            page_size=int(args.get("page_size") or 20),
-            offset=int(args.get("offset") or 0),
-            childlinks=args.get("childlinks"),
-        )
-    except SiebelError as exc:
-        if exc.status_code == 404:
-            return _empty_result(args)
-        if _is_field_error(exc) and args.get("fields"):
-            # Retry with a known-safe field list instead of `None`. Omitting
-            # `fields` makes Siebel return its *default* Integration-Object
-            # field set, which can reference fields that don't exist on the
-            # BC (e.g. 'Primary Address Integration Id' on Contact →
-            # SBL-DAT-00398). 'Id' is universal, so the query still succeeds
-            # with a minimal column instead of 500-ing on bad defaults.
-            log.warning("Field error on query — retrying with minimal field list (Id)")
-            try:
-                result = await auth.client.query(
-                    resolved, bc,
-                    search_spec=args.get("searchspec"),
-                    fields=["Id"],
-                    sort_spec=args.get("sort_spec"),
-                    page_size=int(args.get("page_size") or 20),
-                    offset=int(args.get("offset") or 0),
-                    childlinks=args.get("childlinks"),
-                )
-                return _result_dict(result)
-            except SiebelError as retry_exc:
-                return _error_result(retry_exc)
-        return _error_result(exc)
-    return _result_dict(result)
-
-
-async def _query_child(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    # Same placeholder guard as _query — see there for rationale.
-    bad_fields = _validate_fields_arg(args.get("fields"))
-    if bad_fields:
-        return _error(bad_fields)
-    try:
-        result = await auth.client.query_child_records(
-            resolved,
-            bc,
-            str(args["parent_id"]),
-            str(args["child_business_component"]),
-            search_spec=args.get("searchspec"),
-            fields=args.get("fields"),
-            sort_spec=args.get("sort_spec"),
-            page_size=int(args.get("page_size") or 20),
-            offset=int(args.get("offset") or 0),
-        )
-    except SiebelError as exc:
-        if exc.status_code == 404:
-            return _empty_result(args)
-        return _error_result(exc)
-    return _result_dict(result)
-
-
-async def _resolve_bo_bc(args: dict[str, Any], auth: Any) -> tuple[str | None, str]:
-    resolved = await auth.cache.resolve_business_object(str(args["business_object"]))
-    return resolved, str(args.get("business_component") or resolved or args["business_object"])
-
-
-async def _authenticated_client(
-    settings: AppSettings, username: str, password: str
-) -> SiebelClient | None:
-    """Return a ready-to-use SiebelClient for standalone mode.
-
-    Tries token auth (POST /auth) first — required by Siebel 26.x instances that
-    don't accept raw Basic Auth on data endpoints. Falls back to Basic Auth for
-    older or differently-configured instances. Returns None if credentials are
-    invalid (401/403).
-    """
-    # Attempt 1: token auth
-    token_client = SiebelClient(
-        base_url=settings.base_url,
-        auth_mode="token",
-        username=username,
-        password=password,
-        page_size=settings.default_page_size,
-        request_timeout_ms=settings.request_timeout_ms,
-        max_concurrent_requests=settings.max_concurrent_requests,
-    )
-    try:
-        await token_client.login()
-        log.info("Siebel authentication succeeded via token auth")
-        return token_client
-    except SiebelError as exc:
-        if exc.status_code in {401, 403}:
-            return None  # Bad credentials — no point trying basic
-        log.info(
-            "Token auth endpoint returned HTTP %s — falling back to Basic Auth",
-            exc.status_code,
-        )
-
-    # Attempt 2: basic auth — validate with a lightweight probe
-    basic_client = _basic_client(settings, username, password)
-    try:
-        await basic_client.list_business_objects()
-        basic_client.page_size = settings.default_page_size
-        log.info("Siebel authentication succeeded via Basic Auth")
-        return basic_client
-    except SiebelError as exc:
-        if exc.status_code in {401, 403}:
-            return None
-        # 500 / other — Siebel may restrict the catalogue endpoint but credentials
-        # could still be valid; proceed and let the real tool call surface any error.
-        log.warning(
-            "Basic Auth probe returned HTTP %s — proceeding anyway: %s",
-            exc.status_code,
-            exc.response_body[:200] if exc.response_body else "",
-        )
-        basic_client.page_size = settings.default_page_size
-        return basic_client
-
-
-def _basic_client(settings: AppSettings, username: str, password: str) -> SiebelClient:
-    return SiebelClient(
-        base_url=settings.base_url,
-        auth_mode="basic",
-        username=username,
-        password=password,
-        page_size=1,
-        request_timeout_ms=settings.request_timeout_ms,
-        max_concurrent_requests=settings.max_concurrent_requests,
-    )
-
-
-def _sso_client(settings: AppSettings, username: str) -> SiebelClient:
-    return SiebelClient(
-        base_url=settings.base_url,
-        auth_mode="sso",
-        sso_header_name=settings.sso_header,
-        sso_username=username,
-        page_size=settings.default_page_size,
-        request_timeout_ms=settings.request_timeout_ms,
-        max_concurrent_requests=settings.max_concurrent_requests,
-    )
-
-
-def _require_auth(ctx: ToolContext) -> Any:
-    if ctx.session and ctx.session.client and ctx.session.cache:
-        return ctx.session
-    return _error("Not authenticated. Call the authenticate tool first.")
-
-
-def _result_dict(result: Any) -> dict[str, Any]:
-    return {
-        "items": result.items,
-        "totalCount": result.total_count,
-        "hasMore": result.has_more,
-        "nextStartRow": result.next_start_row,
-        "offset": result.offset,
-        "pageSize": result.page_size,
-    }
-
-
-def _empty_result(args: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "items": [],
-        "totalCount": 0,
-        "hasMore": False,
-        "offset": int(args.get("offset") or 0),
-        "pageSize": int(args.get("page_size") or 20),
-    }
-
-
-def _format_record(record: SiebelRecord) -> str:
-    lines = []
-    for key, value in record.items():
-        if value in (None, ""):
-            continue
-        if key == "Link" and isinstance(value, list):
-            children = [item.get("name") for item in value if isinstance(item, dict) and item.get("rel") == "child"]
-            if children:
-                lines.append(f"  Children: {', '.join(str(c) for c in children)}")
-            continue
-        lines.append(f"  {key}: {value}")
-    return "\n".join(lines)
-
-
-def _format_hierarchical_record(record: SiebelRecord) -> str:
-    visible = {key: value for key, value in record.items() if not key.startswith("__")}
-    return _format_record(visible)
-
-
-def _text(text: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": text}]}
-
-
-def _json_text(data: Any) -> dict[str, Any]:
-    import json
-
-    return _text(json.dumps(data, default=str))
-
-
-def _error(text: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": text}], "isError": True}
-
-
-def _error_result(exc: Exception, tool_name: str = "") -> dict[str, Any]:
-    if isinstance(exc, SiebelError):
-        log.error(
-            "Siebel error in tool %s: HTTP %s — %s",
-            tool_name,
-            exc.status_code,
-            exc.response_body[:500] if exc.response_body else "(no body)",
-        )
-        if exc.status_code == 401:
-            return _error("The Siebel session has expired. Refresh the page or log in again.")
-    else:
-        log.error("Unexpected error in tool %s: %s", tool_name, exc, exc_info=True)
-    # isError (not _text) so the agent loop knows the tool call failed and can
-    # surface a user-friendly message instead of treating the masked text as a
-    # successful result.
-    return _error("[INTERNAL - do not display verbatim] The Siebel operation could not be completed.")
-
-
-# Tokens the LLM emits as placeholders when it doesn't know a real value.
-# Rejecting them up front (instead of forwarding to Siebel) avoids the
-# SBL-EAI-50258 "Invalid fields: '<?>'" round-trip and the broken-default
-# retry that follows (see _query). Compared case-insensitively.
-_PLACEHOLDER_FIELD_TOKENS = {
-    "<?>", "?", "??", "unknown", "n/a", "<field>", "<fields>",
-    "<name>", "<value>", "<placeholder>", "...",
-}
-
-
-def _validate_fields_arg(raw: Any) -> str | None:
-    """Return a guidance error if `fields` contains placeholder tokens the
-    LLM emits when it doesn't know real field names; None when the arg is
-    absent or looks like real field names."""
-    if raw is None:
-        return None
-    parts = [p.strip() for p in (raw.split(",") if isinstance(raw, str) else raw)]
-    bad = [p for p in parts if p and p.lower() in _PLACEHOLDER_FIELD_TOKENS]
-    if not bad:
-        return None
-    return (
-        f"'fields' must be real Siebel field names, but got placeholder(s) {bad!r}. "
-        "Call describe_business_object first to get valid field names, then pass them "
-        "comma-separated — or omit 'fields' to use the default set. Do not guess and "
-        "do not pass placeholders like '<?>'."
-    )

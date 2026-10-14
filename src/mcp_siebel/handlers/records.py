@@ -1,0 +1,501 @@
+"""Top-level record handlers: BC query / count / aggregate / get / create /
+update / delete, plus the records-local helpers they share (field-curation
+ranking, the scoped-query fallback, the field-error retry)."""
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING, Any
+
+from ..siebel_client import SiebelError, SiebelRecord
+from ._common import (
+    _empty_result,
+    _error,
+    _error_result,
+    _format_hierarchical_record,
+    _format_record,
+    _json_text,
+    _require_auth,
+    _resolve_bo_bc,
+    _result_dict,
+    _text,
+    _validate_fields_arg,
+)
+
+if TYPE_CHECKING:
+    from ..tools import ToolContext
+
+log = logging.getLogger("mcp-siebel")
+
+
+# ---------------------------------------------------------------------------
+# Field-curation ranking — used by the get_record scoped-query fallback when no
+# field list was supplied. Siebel describes alphabetically, so a plain prefix
+# returns whatever sorts early; rank by what identifies a record instead.
+# ---------------------------------------------------------------------------
+
+# Cap on the fallback's field list. Asking for every described field can itself
+# be rejected, so take a workable subset — chosen by usefulness, not by
+# descriptor order (see _rank_fallback_fields).
+_MAX_FALLBACK_FIELDS = 40
+
+# Who/what the record is: without these it is unidentifiable.
+_IDENTIFYING_FIELD_HINTS = ("name", "number", "abstract", "subject", "title")
+# How to reach the person. Kept as its own tier above the qualifying fields —
+# lumped together, broad hints like "account" and "date" matched filler
+# (Account Currency Code, Birth Date) and crowded out the email and phone.
+_CONTACT_FIELD_HINTS = ("email", "phone", "mobile", "cellular")
+# Where the record is. Its own tier because an address is only useful whole:
+# with "city"/"country" as mere qualifiers, street, state and postal code sat
+# unhinted and dropped out, and a contact came back with no address at all.
+# Checked after the contact hints so "Email Address" stays a contact detail.
+_ADDRESS_FIELD_HINTS = ("street", "address", "city", "state", "postal", "zip", "province", "country")
+# Useful qualifiers once the record is identified, reachable and located.
+_QUALIFYING_FIELD_HINTS = (
+    "status",
+    "type",
+    "stage",
+    "priority",
+    "owner",
+    "revenue",
+    "close date",
+    "account",
+)
+# Yes/no flags and foreign keys. Siebel names them like the real thing —
+# "Suppress All Emails" and "Email SR Updates Flag" both read as contact
+# details to a keyword match — but nobody asks for them, and the prompt is
+# forbidden from displaying Ids at all. The DTYPE says what a name cannot.
+_LOW_VALUE_FIELD_TYPES = ("DTYPE_BOOL", "DTYPE_ID")
+
+
+def _rank_fallback_fields(
+    names: list[str], limit: int = _MAX_FALLBACK_FIELDS, types: dict[str, str] | None = None
+) -> list[str]:
+    """Pick the most useful `limit` field names.
+
+    Siebel describes fields alphabetically, so taking a plain prefix returns
+    whatever sorts early — for Contact that was Accomplishments, Account
+    Currency Code and Active Status, with Last Name and Email Address falling
+    outside the cap entirely. Rank by what identifies a record instead, keeping
+    descriptor order within a tier so results stay predictable.
+
+    `types` maps field name → Siebel DTYPE where known; it demotes flags and
+    foreign keys that a name-only ranking mistakes for content.
+    """
+    types = types or {}
+
+    def tier(name: str) -> int:
+        n = name.lower()
+        if n == "id":
+            return 0
+        if types.get(name, "").upper() in _LOW_VALUE_FIELD_TYPES:
+            return 6
+        if any(h in n for h in _IDENTIFYING_FIELD_HINTS):
+            return 1
+        if any(h in n for h in _CONTACT_FIELD_HINTS):
+            return 2
+        if any(h in n for h in _ADDRESS_FIELD_HINTS):
+            return 3
+        if any(h in n for h in _QUALIFYING_FIELD_HINTS):
+            return 4
+        return 5
+
+    # sorted() is stable, so equal tiers keep their original order.
+    return sorted(names, key=tier)[:limit]
+
+
+# Read fields per Business Component, ordered the way someone reads a record:
+# who it is, then how to reach them, where they are, and the qualifying detail.
+# For the objects we know, naming the fields beats ranking 190 keyword-scored
+# names — the ranking is a heuristic and the demo instance kept proving it
+# (a Contact came back with two opt-out flags and no address).
+#
+# Mirrors a caller-side preferred-fields list, which does
+# the same job for the navigator. Treated as an ordered *preference list*,
+# intersected with the fields the BC actually reports: naming a field this
+# deployment lacks must cost one field, never the whole read (Siebel answers
+# HTTP 400 for an unknown field). Contact's names are confirmed against the
+# demo instance's describe output; the rest are standard Siebel names.
+_PREFERRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "Contact": (
+        "Last Name",
+        "First Name",
+        "Middle Name",
+        "Job Title",
+        "Primary Account Name",
+        "Work Phone #",
+        "Cellular Phone #",
+        "Home Phone #",
+        "Fax Phone #",
+        "Email Address",
+        "Primary Street Address",
+        "Primary City",
+        "Primary State",
+        "Primary Postal Code",
+        "Primary Country",
+        "Status",
+        "Comment",
+    ),
+    "Account": (
+        "Name",
+        "Account Status",
+        "Type",
+        "Main Phone Number",
+        "Main Fax Number",
+        "Home Page",
+        "Primary Account Street Address",
+        "Primary Account City",
+        "Primary Account State",
+        "Primary Account Postal Code",
+        "Primary Account Country",
+        "Primary Organization",
+        "Annual Revenue",
+        "Employees",
+    ),
+    "Opportunity": (
+        "Name",
+        "Account",
+        "Sales Stage",
+        "Primary Revenue Amount",
+        "Primary Revenue Close Date",
+        "Win Probability",
+        "Primary Organization",
+        "Sales Method",
+        "Description",
+    ),
+    "Service Request": (
+        "SR Number",
+        "Abstract",
+        "Status",
+        "Substatus",
+        "Priority",
+        "Severity",
+        "Account",
+        "Contact Last Name",
+        "Contact First Name",
+        "Owner",
+        "Description",
+    ),
+}
+
+
+def _read_fields(business_component: str, described: list[Any]) -> list[str]:
+    """The field list to read a whole record with.
+
+    Curated order where the object is known, ranked heuristics otherwise — and
+    ranked too when a curated list matches nothing, so a deployment that
+    renamed its fields still gets a usable record instead of an empty read.
+    """
+    available = {f.name for f in described if f.name}
+    curated = [f for f in _PREFERRED_FIELDS.get(business_component, ()) if f in available]
+    if curated:
+        # Follow-up tool calls need the Id even though the prompt never shows it.
+        return [*curated, "Id"] if "Id" in available else curated
+    return _rank_fallback_fields(
+        [f.name for f in described if f.name], types={f.name: f.type for f in described if f.name}
+    )
+
+
+def _ordered_record(record: SiebelRecord, fields: Any) -> SiebelRecord:
+    """Reorder a record to the field order it was requested in.
+
+    Siebel returns fields in its own order — the read that prompted this put
+    "Suppress All Emails" first and the name fourth. The system prompt tells
+    the model to report fields in the order they came back, so that order has
+    to be worth following. Anything Siebel returned but we didn't ask for
+    keeps its place at the end rather than being dropped.
+    """
+    if not fields:
+        return record
+    wanted = [f.strip() for f in (fields.split(",") if isinstance(fields, str) else fields)]
+    ordered = {name: record[name] for name in wanted if name in record}
+    ordered.update({k: v for k, v in record.items() if k not in ordered})
+    return ordered
+
+
+def _is_audit_field(name: str) -> bool:
+    n = name.lower()
+    return any(h in n for h in ("created", "updated", "last upd", "conflict", "integration id"))
+
+
+async def _record_via_query(
+    auth: Any, business_object: str, business_component: str, record_id: str, fields: Any
+) -> Any:
+    """Fetch a single record by Id with an explicit field list.
+
+    The direct `/data/{BO}/{BC}/{id}` read asks Siebel for the whole record. On
+    an instance whose integration component names a field the business
+    component doesn't define, Siebel 500s while serialising it — e.g. Contact
+    referencing 'Primary Address Integration Id' (SBL-DAT-00398). Naming the
+    fields sidesteps the broken one, which is why the navigator can display a
+    record the direct read cannot return.
+    """
+    if not fields:
+        descriptor = await auth.client.describe_bc(business_object, business_component)
+        usable = [f for f in descriptor.fields if f.name and not _is_audit_field(f.name)]
+        fields = _read_fields(business_component, usable)
+    safe_id = str(record_id).replace("'", "''")
+    result = await auth.client.query(
+        business_object,
+        business_component,
+        search_spec=f"[Id]='{safe_id}'",
+        fields=fields,
+        page_size=1,
+    )
+    items = getattr(result, "items", None) or []
+    return _ordered_record(items[0], fields) if items else None
+
+
+# ---------------------------------------------------------------------------
+# Query helpers
+# ---------------------------------------------------------------------------
+
+_FIELD_ERROR_CODES = {"SBL-EAI-50258", "SBL-EAI-50297"}
+
+
+def _is_field_error(exc: SiebelError) -> bool:
+    return exc.status_code == 500 and any(code in exc.response_body for code in _FIELD_ERROR_CODES)
+
+
+async def _query(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    auth = _require_auth(ctx)
+    if isinstance(auth, dict):
+        return auth
+    resolved, bc = await _resolve_bo_bc(args, auth)
+    if not resolved:
+        return _text(f'Business Object "{args["business_object"]}" not found.')
+    # Reject placeholder field tokens (e.g. '<?>') the LLM emits when it
+    # doesn't know real field names — sending them to Siebel wastes a 50258
+    # round-trip and the subsequent retry hits Siebel's (sometimes broken)
+    # default field set. Tell the model to describe the BC first instead.
+    bad_fields = _validate_fields_arg(args.get("fields"))
+    if bad_fields:
+        return _error(bad_fields)
+    try:
+        result = await auth.client.query(
+            resolved,
+            bc,
+            search_spec=args.get("searchspec"),
+            fields=args.get("fields"),
+            sort_spec=args.get("sort_spec"),
+            page_size=int(args.get("page_size") or 20),
+            offset=int(args.get("offset") or 0),
+            childlinks=args.get("childlinks"),
+        )
+    except SiebelError as exc:
+        if exc.status_code == 404:
+            return _empty_result(args)
+        if _is_field_error(exc) and args.get("fields"):
+            # Retry with a known-safe field list instead of `None`. Omitting
+            # `fields` makes Siebel return its *default* Integration-Object
+            # field set, which can reference fields that don't exist on the
+            # BC (e.g. 'Primary Address Integration Id' on Contact →
+            # SBL-DAT-00398). 'Id' is universal, so the query still succeeds
+            # with a minimal column instead of 500-ing on bad defaults.
+            log.warning("Field error on query — retrying with minimal field list (Id)")
+            try:
+                result = await auth.client.query(
+                    resolved,
+                    bc,
+                    search_spec=args.get("searchspec"),
+                    fields=["Id"],
+                    sort_spec=args.get("sort_spec"),
+                    page_size=int(args.get("page_size") or 20),
+                    offset=int(args.get("offset") or 0),
+                    childlinks=args.get("childlinks"),
+                )
+                return _result_dict(result)
+            except SiebelError as retry_exc:
+                return _error_result(retry_exc)
+        return _error_result(exc)
+    return _result_dict(result)
+
+
+# ---------------------------------------------------------------------------
+# Handlers
+# ---------------------------------------------------------------------------
+
+
+async def _query_data(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    result = await _query(args, ctx)
+    if isinstance(result, dict) and "items" not in result:
+        return result
+    rows = [f"Record {result['offset'] + idx + 1}:\n{_format_record(item)}" for idx, item in enumerate(result["items"])]
+    total = result.get("totalCount")
+    count_info = f"Total: {total}" if total is not None else f"Returned: {len(result['items'])}"
+    more = (
+        f"Has more: YES - call again with offset={result.get('nextStartRow')}"
+        if result.get("hasMore")
+        else "Has more: NO (end of results)"
+    )
+    return _text(
+        f"{count_info} | Page size: {result['pageSize']} | {more}\n\n" + ("\n\n".join(rows) or "(no records found)")
+    )
+
+
+async def _query_records_json(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    result = await _query(args, ctx)
+    return result if "items" not in result else _json_text(result)
+
+
+async def _count_records(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    args = {**args, "page_size": 1}
+    result = await _query(args, ctx)
+    if "items" not in result:
+        return result
+    total = result.get("totalCount")
+    return _text(f"Total records: **{total}**" if total is not None else "Count not available.")
+
+
+async def _aggregate_data(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    auth = _require_auth(ctx)
+    if isinstance(auth, dict):
+        return auth
+    resolved = await auth.cache.resolve_business_object(str(args["business_object"]))
+    if not resolved:
+        return _text(f'Business Object "{args["business_object"]}" not found.')
+    bc = str(args.get("business_component") or resolved)
+    field = str(args["field"])
+    operation = str(args["operation"])
+    if operation not in {"sum", "avg", "min", "max", "count"}:
+        return _error("operation must be one of: sum, avg, min, max, count.")
+    offset = 0
+    record_count = 0
+    values: list[float] = []
+    truncated = False
+    for page in range(ctx.settings.aggregate_max_pages):
+        try:
+            result = await auth.client.query(
+                resolved,
+                bc,
+                search_spec=args.get("searchspec"),
+                fields=[field] if operation != "count" else None,
+                page_size=ctx.settings.aggregate_page_size,
+                offset=offset,
+            )
+        except SiebelError as exc:
+            if exc.status_code == 404:
+                break
+            return _error_result(exc)
+        record_count += len(result.items)
+        if operation != "count":
+            for item in result.items:
+                try:
+                    values.append(float(item[field]))
+                except (KeyError, TypeError, ValueError):
+                    pass
+        if not result.has_more or result.next_start_row is None:
+            break
+        offset = result.next_start_row
+    else:
+        truncated = True
+    if operation == "count":
+        value: float = float(record_count)
+    elif not values:
+        return _text(f'No numeric values found in field "{field}" across {record_count} records.')
+    elif operation == "sum":
+        value = sum(values)
+    elif operation == "avg":
+        value = sum(values) / len(values)
+    elif operation == "min":
+        value = min(values)
+    else:
+        value = max(values)
+    suffix = f"\nResult truncated after {ctx.settings.aggregate_max_pages} pages." if truncated else ""
+    rendered = f"{int(value):,}" if value.is_integer() else f"{value:,.2f}"
+    return _text(f"{resolved}/{bc}.{field} {operation}: **{rendered}**\nRecords processed: {record_count}{suffix}")
+
+
+async def _get_record(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    auth = _require_auth(ctx)
+    if isinstance(auth, dict):
+        return auth
+    resolved, bc = await _resolve_bo_bc(args, auth)
+    if not resolved:
+        return _text(f'Business Object "{args["business_object"]}" not found.')
+    bad_fields = _validate_fields_arg(args.get("fields"))
+    if bad_fields:
+        return _error(bad_fields)
+    fields = args.get("fields")
+    try:
+        record = await auth.client.get_record(resolved, bc, str(args["id"]), fields)
+    except SiebelError as exc:
+        # A 404 already comes back as None, so an exception here means the read
+        # itself failed. Retry naming the fields before giving up: a
+        # misconfigured integration component shouldn't make a record
+        # unreadable when a scoped query can read it. If that fails too, the
+        # original Siebel error propagates — it names the offending field,
+        # which is what an administrator needs.
+        log.warning("get_record direct read failed (%s); retrying as a scoped query", exc)
+        record = await _record_via_query(auth, resolved, bc, str(args["id"]), fields)
+        if record is None:
+            raise
+    if not record:
+        return _text("No record found.")
+    return _text(f"{resolved}/{bc} record {args['id']}:\n{_format_record(record)}")
+
+
+async def _get_record_with_children(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    auth = _require_auth(ctx)
+    if isinstance(auth, dict):
+        return auth
+    resolved, bc = await _resolve_bo_bc(args, auth)
+    if not resolved:
+        return _text(f'Business Object "{args["business_object"]}" not found.')
+    record = await auth.client.get_record_with_children(resolved, bc, str(args["id"]))
+    if not record:
+        return _text("No record found.")
+    return _text(f"{resolved}/{bc} record {args['id']}:\n{_format_hierarchical_record(record)}")
+
+
+async def _create_record(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    data = args.get("data")
+    if not isinstance(data, dict) or not data:
+        return _error('The "data" parameter is required and must be a non-empty object.')
+    auth = _require_auth(ctx)
+    if isinstance(auth, dict):
+        return auth
+    resolved, bc = await _resolve_bo_bc(args, auth)
+    if not resolved:
+        return _text(f'Business Object "{args["business_object"]}" not found.')
+    result = await auth.client.create_record(resolved, bc, data)
+    return _text(f"Created record in {resolved}/{bc}:\n{_format_record(result)}")
+
+
+async def _create_record_json(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """The JSON-returning twin of _create_record — same create, but returns
+    _json_text(result) so a caller can read the new record's Id
+    programmatically (mirrors query_records_json vs query_data)."""
+    data = args.get("data")
+    if not isinstance(data, dict) or not data:
+        return _error('The "data" parameter is required and must be a non-empty object.')
+    auth = _require_auth(ctx)
+    if isinstance(auth, dict):
+        return auth
+    resolved, bc = await _resolve_bo_bc(args, auth)
+    if not resolved:
+        return _text(f'Business Object "{args["business_object"]}" not found.')
+    result = await auth.client.create_record(resolved, bc, data)
+    return _json_text(result)
+
+
+async def _update_record(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    auth = _require_auth(ctx)
+    if isinstance(auth, dict):
+        return auth
+    resolved, bc = await _resolve_bo_bc(args, auth)
+    if not resolved:
+        return _text(f'Business Object "{args["business_object"]}" not found.')
+    result = await auth.client.update_record(resolved, bc, str(args["id"]), args["data"])
+    return _text(f"Updated record {args['id']} in {resolved}/{bc}:\n{_format_record(result)}")
+
+
+async def _delete_record(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    auth = _require_auth(ctx)
+    if isinstance(auth, dict):
+        return auth
+    resolved, bc = await _resolve_bo_bc(args, auth)
+    if not resolved:
+        return _text(f'Business Object "{args["business_object"]}" not found.')
+    await auth.client.delete_record(resolved, bc, str(args["id"]))
+    return _text(f"Deleted record {args['id']} from {resolved}/{bc}.")

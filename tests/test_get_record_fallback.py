@@ -19,15 +19,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from mcp_siebel.handlers.records import _get_record, _rank_fallback_fields
 from mcp_siebel.siebel_client import SiebelBCDescriptor, SiebelError, SiebelFieldDescriptor, SiebelQueryResult
-from mcp_siebel.tools import _get_record, _rank_fallback_fields
 
 _BROKEN_FIELD_ERROR = SiebelError(
     "Siebel API returned 500",
     500,
-    '{"ERROR":"Method \'FieldValue\' of business component \'Contact\' returned the '
+    "{\"ERROR\":\"Method 'FieldValue' of business component 'Contact' returned the "
     "following error:\\\"Field 'Primary Address Integration Id' does not exist in "
-    'definition for business component \'Contact\'.(SBL-DAT-00398)\\"(SBL-EAI-04376)"}',
+    "definition for business component 'Contact'.(SBL-DAT-00398)\\\"(SBL-EAI-04376)\"}",
 )
 
 
@@ -64,7 +64,7 @@ class _Ctx:
 def ctx(monkeypatch):
     client = AsyncMock()
     context = _Ctx(client)
-    monkeypatch.setattr("mcp_siebel.tools._require_auth", lambda _c: context)
+    monkeypatch.setattr("mcp_siebel.handlers.records._require_auth", lambda _c: context)
     return context
 
 
@@ -107,9 +107,7 @@ async def test_fallback_reuses_caller_supplied_fields(ctx):
         )
     )
 
-    await _get_record(
-        {"business_object": "Contact", "id": "7SIA-5TYFM", "fields": ["Last Name"]}, None
-    )
+    await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM", "fields": ["Last Name"]}, None)
 
     ctx.client.describe_bc.assert_not_awaited()
     assert ctx.client.query.call_args.kwargs["fields"] == ["Last Name"]
@@ -291,9 +289,7 @@ _CONTACT_BC_TYPES = {
 async def _fallback_fields(ctx, *, bc_fields=_CONTACT_BC_FIELDS, args=None) -> list[str]:
     """Run get_record through the fallback and return the fields it asked for."""
     ctx.client.get_record = AsyncMock(side_effect=_BROKEN_FIELD_ERROR)
-    ctx.client.describe_bc = AsyncMock(
-        return_value=_descriptor(*bc_fields, types=_CONTACT_BC_TYPES)
-    )
+    ctx.client.describe_bc = AsyncMock(return_value=_descriptor(*bc_fields, types=_CONTACT_BC_TYPES))
     ctx.client.query = AsyncMock(return_value=_result({"Last Name": "Taylor"}))
     await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM", **(args or {})}, None)
     return list(ctx.client.query.call_args.kwargs["fields"])
@@ -363,9 +359,7 @@ async def test_record_is_reported_in_the_order_it_was_asked_for(ctx):
     # report fields "in the order returned", so the order has to be worth
     # following.
     ctx.client.get_record = AsyncMock(side_effect=_BROKEN_FIELD_ERROR)
-    ctx.client.describe_bc = AsyncMock(
-        return_value=_descriptor(*_CONTACT_BC_FIELDS, types=_CONTACT_BC_TYPES)
-    )
+    ctx.client.describe_bc = AsyncMock(return_value=_descriptor(*_CONTACT_BC_FIELDS, types=_CONTACT_BC_TYPES))
     ctx.client.query = AsyncMock(
         return_value=_result(
             {
@@ -385,9 +379,7 @@ async def test_record_is_reported_in_the_order_it_was_asked_for(ctx):
 @pytest.mark.asyncio
 async def test_caller_supplied_field_order_is_preserved_too(ctx):
     ctx.client.get_record = AsyncMock(side_effect=_BROKEN_FIELD_ERROR)
-    ctx.client.query = AsyncMock(
-        return_value=_result({"Last Name": "Taylor", "First Name": "Chris"})
-    )
+    ctx.client.query = AsyncMock(return_value=_result({"Last Name": "Taylor", "First Name": "Chris"}))
 
     result = await _get_record(
         {
@@ -407,12 +399,8 @@ async def test_unrequested_fields_are_still_reported(ctx):
     # Siebel can return more than it was asked for. Reordering must never drop
     # a field — the prompt promises the user every field that came back.
     ctx.client.get_record = AsyncMock(side_effect=_BROKEN_FIELD_ERROR)
-    ctx.client.query = AsyncMock(
-        return_value=_result({"Surprise": "value", "Last Name": "Taylor"})
-    )
+    ctx.client.query = AsyncMock(return_value=_result({"Surprise": "value", "Last Name": "Taylor"}))
 
-    result = await _get_record(
-        {"business_object": "Contact", "id": "7SIA-5TYFM", "fields": ["Last Name"]}, None
-    )
+    result = await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM", "fields": ["Last Name"]}, None)
 
     assert "Surprise: value" in result["content"][0]["text"]

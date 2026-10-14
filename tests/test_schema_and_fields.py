@@ -26,6 +26,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from mcp_siebel.config import AppSettings
+from mcp_siebel.handlers._common import _validate_fields_arg
+from mcp_siebel.handlers.metadata import _describe_business_object
+from mcp_siebel.handlers.records import _query_data
 from mcp_siebel.schema_cache import SchemaCache
 from mcp_siebel.siebel_client import (
     SiebelBCDescriptor,
@@ -33,13 +36,7 @@ from mcp_siebel.siebel_client import (
     SiebelFieldDescriptor,
     SiebelQueryResult,
 )
-from mcp_siebel.tools import (
-    SessionContext,
-    ToolContext,
-    _describe_business_object,
-    _query_data,
-    _validate_fields_arg,
-)
+from mcp_siebel.tools import SessionContext, ToolContext
 
 # ---------------------------------------------------------------------------
 # Registry-served schema (authored in tool_specs.json, $ref-resolved by the loader)
@@ -96,9 +93,7 @@ def _query_ctx() -> tuple[ToolContext, AsyncMock]:
 @pytest.mark.asyncio
 async def test_query_data_rejects_placeholder_fields_without_calling_siebel():
     ctx, query_mock = _query_ctx()
-    response = await _query_data(
-        {"business_object": "Account", "business_component": "Account", "fields": "<?>"}, ctx
-    )
+    response = await _query_data({"business_object": "Account", "business_component": "Account", "fields": "<?>"}, ctx)
     assert response.get("isError") is True
     assert "placeholder" in response["content"][0]["text"].lower()
     query_mock.assert_not_called()
@@ -166,9 +161,7 @@ async def test_describe_falls_back_to_child_own_bo_on_50257():
         raise AssertionError(f"unexpected describe call: {bo}/{bc}")
 
     ctx = _describe_ctx(get_descriptor, {"account": "Account", "contact": "Contact"})
-    response = await _describe_business_object(
-        {"business_object": "Account", "business_component": "Contact"}, ctx
-    )
+    response = await _describe_business_object({"business_object": "Account", "business_component": "Contact"}, ctx)
     text = response["content"][0]["text"]
     assert "Contact / Contact" in text  # described under Contact's own BO, not Account
     assert "Last Name" in text

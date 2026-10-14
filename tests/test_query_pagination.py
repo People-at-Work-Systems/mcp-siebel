@@ -19,8 +19,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from mcp_siebel.config import AppSettings
+from mcp_siebel.handlers.children import _query_child_records
+from mcp_siebel.handlers.records import _query_data
 from mcp_siebel.siebel_client import SiebelQueryResult
-from mcp_siebel.tools import SessionContext, ToolContext, _query_child_records, _query_data
+from mcp_siebel.tools import SessionContext, ToolContext
 
 
 def _make_ctx(query_result: SiebelQueryResult) -> tuple[ToolContext, AsyncMock]:

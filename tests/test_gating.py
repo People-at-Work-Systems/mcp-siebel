@@ -5,10 +5,12 @@ DELETE_TOOLS and the disabled_tools property.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from mcp_siebel.config import AppSettings
-from mcp_siebel.tools import ToolRegistry
+from mcp_siebel.tools import SessionContext, ToolRegistry
 
 WRITE_TOOLS = {
     "create_record",
@@ -115,3 +117,57 @@ async def test_call_refuses_disabled_delete_tool() -> None:
     reg = ToolRegistry(AppSettings())
     result = await reg.call("delete_record", {}, None)
     assert result.get("isError")
+
+
+# --- always_enabled exemption (spec-driven, not hard-coded) ------------------
+#
+# The authenticate tool is marked ``"always_enabled": true`` in tool_specs.json.
+# The registry exempts always_enabled tools from the disabled-tools filter so a
+# deployer can't brick the server by listing them in SIEBEL_DISABLED_TOOLS, and
+# logs a warning instead of silently ignoring the entry.
+
+
+def test_always_enabled_tool_stays_listed_and_callable_when_disabled_listed() -> None:
+    """An always_enabled tool listed in SIEBEL_DISABLED_TOOLS stays listed, and
+    call() does not refuse it as disabled (it runs the handler instead)."""
+    s = AppSettings()
+    s.disabled_tools_raw = "authenticate, query_data"
+    reg = ToolRegistry(s)
+    names = _names(reg)
+    assert "authenticate" in names  # always_enabled — exempt
+    assert "query_data" not in names  # normal tool alongside it — still hidden
+
+
+@pytest.mark.asyncio
+async def test_call_does_not_refuse_always_enabled_tool() -> None:
+    """call() runs the always_enabled tool's handler rather than returning the
+    'is disabled' error — the handler surfaces its own (credential) error."""
+    s = AppSettings()
+    s.disabled_tools_raw = "authenticate"
+    reg = ToolRegistry(s)
+    result = await reg.call("authenticate", {"username": "x"}, SessionContext(session_id="s1"))
+    assert result.get("isError")  # password-required, but NOT a disabled refusal
+    text = " ".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
+    assert "disabled" not in text.lower()
+
+
+def test_warning_logged_when_always_enabled_listed_in_disabled(caplog) -> None:
+    """Listing an always_enabled tool in SIEBEL_DISABLED_TOOLS logs a clear
+    warning at load time — the entry is ignored, not silently dropped."""
+    s = AppSettings()
+    s.disabled_tools_raw = "authenticate"
+    with caplog.at_level(logging.WARNING, logger="mcp-siebel"):
+        reg = ToolRegistry(s)  # noqa: F841 — construction triggers the load-time warning
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("authenticate" in m and "always_enabled" in m for m in warnings), warnings
+
+
+def test_normal_tool_alongside_always_enabled_is_still_disabled() -> None:
+    """The exemption applies only to always_enabled tools — a normal tool listed
+    next to one is still disabled, and no warning is logged for it."""
+    s = AppSettings(allow_write=True, allow_delete=True)
+    s.disabled_tools_raw = "authenticate, query_data"
+    reg = ToolRegistry(s)
+    names = _names(reg)
+    assert "query_data" not in names
+    assert "authenticate" in names
