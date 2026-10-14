@@ -1,11 +1,11 @@
 """Tests for the externalized, hot-reloadable tool-spec JSON.
 
 The spec file (``mcp_siebel/specs/tool_specs.json``) is the single source of
-truth for each tool's description and input_schema at runtime; handlers stay in
-Python (``_build_tools()``). These pin: the bundled file covers every handler,
-the registry actually loads it (typed schemas reach the client), mtime hot-reload
-works, and a missing / corrupt / orphaned spec falls back to built-in metadata
-without crashing.
+truth for each tool's description and input_schema at runtime; the registry knows
+only the handlers (``_build_handlers()``). These pin: the bundled file covers
+every handler, the registry actually loads it (typed schemas reach the client),
+mtime hot-reload works, and a missing / corrupt / invalid / orphaned spec yields
+a degraded placeholder (tool still callable) rather than crashing.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import os
 from importlib.resources import files
 
 from mcp_siebel.config import AppSettings
-from mcp_siebel.tools import ToolRegistry, _build_tools
+from mcp_siebel.tools import ToolRegistry, _build_handlers
 
 
 def _registry_with_spec(tmp_path, spec_obj) -> ToolRegistry:
@@ -26,23 +26,27 @@ def _registry_with_spec(tmp_path, spec_obj) -> ToolRegistry:
     return ToolRegistry(settings)
 
 
+def _degraded_description(name: str) -> str:
+    return f"Tool '{name}' — spec unavailable (tool_specs.json missing or invalid)."
+
+
 # ---------------------------------------------------------------------------
 # Bundled spec integrity
 # ---------------------------------------------------------------------------
 
 
 def test_spec_json_covers_all_handlers() -> None:
-    """Every handler in _build_tools() has an entry in the bundled spec — so
+    """Every handler in _build_handlers() has an entry in the bundled spec — so
     adding a Python tool without regenerating the spec is caught. Value equality
     is NOT asserted, so editing descriptions in the JSON is allowed."""
     spec = json.loads(files("mcp_siebel").joinpath("specs", "tool_specs.json").read_text(encoding="utf-8"))
-    missing = [name for name in _build_tools() if name not in spec]
+    missing = [name for name in _build_handlers() if name not in spec]
     assert not missing, f"handlers without a spec entry: {missing}"
 
 
 def test_spec_loaded_from_json() -> None:
-    """The registry serves the typed schema from the spec file, not the
-    all-string built-in fallback (page_size/fields are typed in the spec)."""
+    """The registry serves the typed schema from the spec file, not a degraded
+    placeholder (page_size/fields are typed in the spec)."""
     reg = ToolRegistry(AppSettings())
     props = reg._tools["query_data"].input_schema["properties"]
     assert props["page_size"]["type"] == "integer"
@@ -98,7 +102,7 @@ def test_spec_no_reload_when_mtime_unchanged(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Fallbacks — the server never crashes over a bad spec
+# Fallbacks — the server never crashes over a bad spec; it degrades.
 # ---------------------------------------------------------------------------
 
 
@@ -108,8 +112,9 @@ def test_spec_fallback_on_missing_file(tmp_path) -> None:
     reg = ToolRegistry(settings)
     names = {t["name"] for t in reg.list_tools()}
     assert "query_data" in names
-    # built-in fallback: page_size stays string (no spec loaded)
-    assert reg._tools["query_data"].input_schema["properties"]["page_size"]["type"] == "string"
+    # degraded placeholder: empty properties, marker description
+    assert reg._tools["query_data"].input_schema["properties"] == {}
+    assert reg._tools["query_data"].description == _degraded_description("query_data")
 
 
 def test_spec_fallback_on_corrupt_json(tmp_path) -> None:
@@ -120,21 +125,34 @@ def test_spec_fallback_on_corrupt_json(tmp_path) -> None:
     reg = ToolRegistry(settings)
     names = {t["name"] for t in reg.list_tools()}
     assert "query_data" in names
-    assert reg._tools["query_data"].input_schema["properties"]["page_size"]["type"] == "string"
+    assert reg._tools["query_data"].input_schema["properties"] == {}
+    assert reg._tools["query_data"].description == _degraded_description("query_data")
 
 
-def test_spec_invalid_entry_falls_back_to_builtin(tmp_path) -> None:
+def test_spec_invalid_entry_degraded(tmp_path) -> None:
     """An entry that fails validation (non-string description) is ignored for
-    that tool and the built-in metadata is kept."""
+    that tool and a degraded placeholder is used. A valid entry beside it still
+    serves its JSON metadata, so one bad entry doesn't poison the rest."""
     spec = tmp_path / "badentry.json"
     spec.write_text(
-        json.dumps({"query_data": {"description": 123, "input_schema": {"type": "object", "properties": {}}}}),
+        json.dumps(
+            {
+                "query_data": {"description": 123, "input_schema": {"type": "object", "properties": {}}},
+                "count_records": {
+                    "description": "count tool",
+                    "input_schema": {"type": "object", "properties": {"business_object": {"type": "string"}}},
+                },
+            }
+        ),
         encoding="utf-8",
     )
     settings = AppSettings()
     settings.tools_spec_path = str(spec)
     reg = ToolRegistry(settings)
-    assert reg._tools["query_data"].description == _build_tools()["query_data"].description
+    assert reg._tools["query_data"].description == _degraded_description("query_data")
+    assert reg._tools["query_data"].input_schema["properties"] == {}
+    # the valid sibling entry is served from JSON, not degraded
+    assert reg._tools["count_records"].description == "count tool"
 
 
 def test_spec_entry_without_handler_skipped(tmp_path) -> None:

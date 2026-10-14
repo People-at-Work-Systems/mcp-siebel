@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mcp_siebel.tools import FIELD_DESCRIPTIONS, _build_tools
+from mcp_siebel.tools import _build_tool_metadata
 
 # Per-parameter JSON Schema types that are not plain strings. This map lived in
 # stdio.py as the runtime enrichment layer; with schemas now authored in the spec
@@ -41,13 +41,14 @@ _PROP_TYPES: dict[str, dict[str, object]] = {
 
 def _merge_property(name: str, base: dict[str, object]) -> dict[str, object]:
     """Build the final property schema for ``name``: type from ``_PROP_TYPES`` if
-    the name is known (else the base string type), description from
-    ``FIELD_DESCRIPTIONS`` if present (else the ``_PROP_TYPES`` description)."""
+    the name is known (else the base string type), description from the base
+    schema (already authored via ``FIELD_DESCRIPTIONS`` in ``_schema()``) if
+    present, else the ``_PROP_TYPES`` description."""
     pt = _PROP_TYPES.get(name)
     if pt is None:
         return dict(base)
     out = dict(pt)
-    desc = FIELD_DESCRIPTIONS.get(name) or pt.get("description")
+    desc = base.get("description") or pt.get("description")
     if desc:
         out["description"] = desc
     return out
@@ -65,7 +66,7 @@ def _build_final_schema(base_schema: dict[str, object]) -> dict[str, object]:
 
 
 def main() -> None:
-    tools = _build_tools()
+    tools = _build_tool_metadata()
     spec: dict[str, dict[str, object]] = {}
     for name, tool in tools.items():
         spec[name] = {

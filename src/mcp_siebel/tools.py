@@ -119,20 +119,20 @@ def _load_spec(path: str) -> dict[str, Any] | None:
     """Read and parse the tool-spec JSON at ``path``.
 
     Returns the parsed object (tool name → entry) on success, or ``None`` on any
-    read/parse error so the caller can fall back to the built-in metadata
-    instead of crashing the server over a bad spec file.
+    read/parse error so the caller can serve degraded placeholder specs instead
+    of crashing the server over a bad spec file.
     """
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except OSError as exc:
-        log.warning("Tool spec file not readable at %s: %s — using built-in metadata", path, exc)
+        log.warning("Tool spec file not readable at %s: %s — serving degraded specs", path, exc)
         return None
     except json.JSONDecodeError as exc:
-        log.warning("Tool spec file is not valid JSON at %s: %s — using built-in metadata", path, exc)
+        log.warning("Tool spec file is not valid JSON at %s: %s — serving degraded specs", path, exc)
         return None
     if not isinstance(data, dict):
-        log.warning("Tool spec file at %s must be a JSON object keyed by tool name — using built-in metadata", path)
+        log.warning("Tool spec file at %s must be a JSON object keyed by tool name — serving degraded specs", path)
         return None
     return data
 
@@ -140,7 +140,7 @@ def _load_spec(path: str) -> dict[str, Any] | None:
 def _valid_spec_entry(entry: Any) -> bool:
     """Light per-entry validation: an entry must carry a string description and
     an input_schema dict with a type and properties map. Anything failing this
-    is ignored for that tool and the built-in metadata is kept instead."""
+    is ignored for that tool and a degraded placeholder spec is used instead."""
     return (
         isinstance(entry, dict)
         and isinstance(entry.get("description"), str)
@@ -150,17 +150,34 @@ def _valid_spec_entry(entry: Any) -> bool:
     )
 
 
+def _degraded_spec(name: str, handler: ToolHandler) -> ToolSpec:
+    """Placeholder ToolSpec for when the JSON spec is unavailable or has no valid
+    entry for a tool. The tool stays callable (its handler is real) but the LLM
+    gets no parameter guidance — operators fix the spec file to restore full
+    schemas. Logged at load time so a degraded load is never silent."""
+    return ToolSpec(
+        name=name,
+        description=f"Tool '{name}' — spec unavailable (tool_specs.json missing or invalid).",
+        input_schema={"type": "object", "properties": {}},
+        handler=handler,
+    )
+
+
 class ToolRegistry:
     """Holds the tool map and serves metadata from an external spec file.
 
-    Handlers (the Python callables that talk to Siebel) always come from
-    ``_build_tools()``. Each tool's description and input_schema come from the
-    spec JSON when it has a valid entry for that tool, else from the built-in
-    ``ToolSpec``. The spec file is hot-reloaded by mtime: ``list_tools()`` stats
-    the file and re-reads it only when it changed, so edits go live on the next
-    tools/list with no restart. A missing or corrupt spec file is logged and
-    silently falls back to the built-in metadata — the server never crashes over
-    a bad spec.
+    Runtime knows only the handlers (``_build_handlers()`` — name → callable).
+    Each tool's description and input_schema come solely from the spec JSON: the
+    file is the single source of truth for metadata. The spec is hot-reloaded by
+    mtime — ``list_tools()`` stats the file and re-reads it only when it changed,
+    so edits go live on the next tools/list with no restart. A missing, corrupt,
+    or entry-less spec yields a degraded placeholder (tool still callable, no
+    param guidance) and a warning — the server never crashes over a bad spec.
+
+    The Python-authored metadata in ``_build_tool_metadata()`` is NOT used at
+    runtime; it is the generator's input (``scripts/dump_tool_specs.py``) that
+    bakes the bundled JSON. Edit the JSON (or an override at
+    ``SIEBEL_TOOLS_SPEC_PATH``) to change what clients see.
     """
 
     def __init__(self, settings: AppSettings) -> None:
@@ -168,22 +185,25 @@ class ToolRegistry:
         self._spec_path = _resolve_spec_path(settings)
         self._spec_mtime: float | None = None
         self._lock = threading.Lock()
-        # _build_tools() is the source of handlers AND the fallback metadata.
-        self._tools = _build_tools()
+        self._handlers = _build_handlers()
+        self._tools: dict[str, ToolSpec] = {}
         self._reload_if_changed()
 
     def _reload_if_changed(self) -> None:
         """Re-read the spec file if its mtime changed since the last load, and
-        rebuild ``self._tools`` from the handler map overlaid with spec metadata."""
+        rebuild ``self._tools`` from the handler map + spec metadata."""
         with self._lock:
             try:
                 mtime = os.stat(self._spec_path).st_mtime_ns
             except OSError:
-                # Override path gone missing (or bundled file absent in a broken
-                # install): keep whatever we have and stop probing until it reappears.
-                if self._spec_mtime is not None:
-                    log.warning("Tool spec file disappeared: %s — keeping current tools", self._spec_path)
-                    self._spec_mtime = None
+                # File gone missing. Keep serving the last good tools if we have
+                # them; otherwise degrade so the server still lists something.
+                if self._tools:
+                    log.warning("Tool spec file unavailable: %s — keeping current tools", self._spec_path)
+                else:
+                    log.warning("Tool spec file unavailable: %s — serving degraded specs", self._spec_path)
+                    self._tools = {n: _degraded_spec(n, h) for n, h in self._handlers.items()}
+                self._spec_mtime = None
                 return
             if mtime == self._spec_mtime:
                 return
@@ -191,27 +211,37 @@ class ToolRegistry:
 
             data = _load_spec(self._spec_path)
             if data is None:
-                return  # error already logged; keep current _tools
+                # Load failed. Keep last good tools if any; else degrade.
+                if not self._tools:
+                    log.warning("Serving degraded tool specs (spec at %s not usable)", self._spec_path)
+                    self._tools = {n: _degraded_spec(n, h) for n, h in self._handlers.items()}
+                return
 
-            handlers = _build_tools()
             built: dict[str, ToolSpec] = {}
-            for name, base in handlers.items():
+            degraded = 0
+            for name, handler in self._handlers.items():
                 entry = data.get(name)
                 if entry is not None and _valid_spec_entry(entry):
                     built[name] = ToolSpec(
                         name=name,
                         description=entry["description"],
                         input_schema=entry["input_schema"],
-                        handler=base.handler,
+                        handler=handler,
                     )
                 else:
-                    built[name] = base  # no/invalid spec entry → built-in metadata
+                    built[name] = _degraded_spec(name, handler)
+                    degraded += 1
             # Spec entries that name no real handler can't be called — warn and skip.
-            orphaned = [n for n in data if n not in handlers]
-            for name in orphaned:
-                log.warning("Tool spec entry %r at %s has no matching handler — ignored", name, self._spec_path)
+            for orphan in (n for n in data if n not in self._handlers):
+                log.warning("Tool spec entry %r at %s has no matching handler — ignored", orphan, self._spec_path)
             self._tools = built
-            log.info("Loaded %d tool specs from %s", len(built), self._spec_path)
+            if degraded:
+                log.warning(
+                    "Loaded %d tool specs from %s (%d degraded — missing/invalid entry)",
+                    len(built), self._spec_path, degraded,
+                )
+            else:
+                log.info("Loaded %d tool specs from %s", len(built), self._spec_path)
 
     def list_tools(self) -> list[dict[str, Any]]:
         self._reload_if_changed()
@@ -238,7 +268,23 @@ class ToolRegistry:
         return result
 
 
-def _build_tools() -> dict[str, ToolSpec]:
+def _build_handlers() -> dict[str, ToolHandler]:
+    """Runtime handler map (tool name → callable), projected from
+    ``_build_tool_metadata()``. The registry uses only this at runtime —
+    metadata (description/input_schema) comes from the spec JSON, never from
+    Python."""
+    return {name: spec.handler for name, spec in _build_tool_metadata().items()}
+
+
+def _build_tool_metadata() -> dict[str, ToolSpec]:
+    """Authoring source for the bundled tool-spec JSON.
+
+    NOT used at runtime — ``ToolRegistry`` reads metadata from the spec file.
+    This is the input to ``scripts/dump_tool_specs.py``, which bakes each tool's
+    description and base input_schema (built via ``_schema()`` +
+    ``FIELD_DESCRIPTIONS``) into ``tool_specs.json``. Re-run the generator after
+    editing anything here; the bundled JSON is what clients see.
+    """
     specs = [
         ToolSpec(
             "authenticate",
