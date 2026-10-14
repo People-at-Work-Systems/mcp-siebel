@@ -23,8 +23,10 @@ Point Claude Desktop at it via mcp-remote:
       }
     }
 
-The first tool to call is ``authenticate`` with username/password to obtain a
-``session_id`` required by all subsequent Siebel tools.
+The first tool to call is the session-establishment tool (the spec entry marked
+``establishes_session`` — see ``registry.session_tool_name``) with
+username/password to obtain a ``session_id`` required by all subsequent Siebel
+tools.
 
 REST surface: /tools, /sessions, /tools/{name}, /mcp/tools, /mcp/call/{name},
 /health, /metrics.
@@ -140,10 +142,10 @@ async def _call_tool(
     args = dict(params.arguments or {})
     session_id = args.pop("session_id", None)
     session = sessions.get(session_id)
-    if name == "authenticate" and session is None:
+    if name == registry.session_tool_name and session is None:
         session = sessions.create()
     result = await registry.call(name, args, session)
-    if name == "authenticate" and session is not None:
+    if name == registry.session_tool_name and session is not None:
         result = {**result, "session_id": session.session_id}
     content = result.get("content") or [{"type": "text", "text": str(result)}]
     texts: list[ContentBlock] = [TextContent(type="text", text=c["text"]) for c in content if c.get("type") == "text"]
@@ -222,7 +224,7 @@ async def list_mcp_tools() -> dict[str, Any]:
 async def create_session(request: SessionCreateRequest) -> SessionCreateResponse:
     session = sessions.create()
     result = await registry.call(
-        "authenticate",
+        registry.session_tool_name,
         {"username": request.username, "password": request.password},
         session,
     )
@@ -232,10 +234,10 @@ async def create_session(request: SessionCreateRequest) -> SessionCreateResponse
 @app.post("/tools/{tool_name}", dependencies=[Depends(require_api_token)])
 async def call_tool(tool_name: str, request: ToolCallRequest) -> dict[str, Any]:
     session = sessions.get(request.session_id)
-    if tool_name == "authenticate" and session is None:
+    if tool_name == registry.session_tool_name and session is None:
         session = sessions.create()
     result = await registry.call(tool_name, request.arguments, session)
-    if tool_name == "authenticate" and session is not None:
+    if tool_name == registry.session_tool_name and session is not None:
         result = {**result, "session_id": session.session_id}
     return result
 

@@ -89,6 +89,12 @@ class ToolSpec:
     # stays free of tool names. Load-time rule: always_enabled is only allowed
     # with access "read" — it must never bypass the access gate.
     always_enabled: bool = False
+    # True for the single entry the spec marks ``establishes_session`` — the
+    # tool the transports call to create a session and whose session_id they
+    # inject into results/schemas. Exactly one such entry is required, and it
+    # must be always_enabled + access "read". Authored in the spec, not
+    # hard-coded here, so tools.py stays free of tool names.
+    establishes_session: bool = False
 
 
 class SessionStore:
@@ -195,7 +201,8 @@ def _valid_spec_entry(entry: Any) -> bool:
     """Pre-deref structural check: an entry must carry a string description, a
     string ``kind``, a string ``handler`` reference, a valid ``access`` level,
     and an input_schema dict with a type and a properties map.
-    ``always_enabled`` is optional but, if present, must be a bool."""
+    ``always_enabled`` and ``establishes_session`` are optional but, if
+    present, must be bools."""
     return (
         isinstance(entry, dict)
         and isinstance(entry.get("description"), str)
@@ -207,6 +214,7 @@ def _valid_spec_entry(entry: Any) -> bool:
         and isinstance(entry.get("access"), str)
         and entry.get("access") in _ACCESS_LEVELS
         and ("always_enabled" not in entry or isinstance(entry["always_enabled"], bool))
+        and ("establishes_session" not in entry or isinstance(entry["establishes_session"], bool))
     )
 
 
@@ -284,7 +292,18 @@ class ToolRegistry:
         self._spec_mtime: float | None = None
         self._lock = threading.Lock()
         self._tools: dict[str, ToolSpec] = {}
+        # Name of the spec's establishes_session tool; set on each successful
+        # load. None only when no spec has loaded yet.
+        self._session_tool_name: str | None = None
         self._reload_if_changed()
+
+    @property
+    def session_tool_name(self) -> str:
+        """Name of the spec's single establishes_session tool — the one the
+        transports call to create a session and whose session_id they inject.
+        Set on every successful load; a successful load always has exactly one."""
+        assert self._session_tool_name is not None, "no tool spec loaded"
+        return self._session_tool_name
 
     def _load_valid_tools(self) -> dict[str, ToolSpec]:
         """Read, parse, deref, validate, and resolve handlers for the spec file.
@@ -341,7 +360,23 @@ class ToolRegistry:
                 handler=handler,
                 access=access,
                 always_enabled=always_enabled,
+                establishes_session=bool(entry.get("establishes_session", False)),
             )
+        # Exactly one entry establishes a session; it must be always_enabled and
+        # access "read". The transports read its name from session_tool_name, so
+        # this invariant is what lets them avoid hard-coding a tool name.
+        session_tools = [n for n, t in built.items() if t.establishes_session]
+        if len(session_tools) != 1:
+            raise _SpecError(
+                f"exactly one tool must mark establishes_session (found {len(session_tools)}: {session_tools!r})"
+            )
+        session_name = session_tools[0]
+        session_spec = built[session_name]
+        if not session_spec.always_enabled:
+            raise _SpecError(f"establishes_session tool {session_name!r} must be always_enabled")
+        if session_spec.access != "read":
+            raise _SpecError(f"establishes_session tool {session_name!r} must be access 'read'")
+        self._session_tool_name = session_name
         return built
 
     def _reload_if_changed(self) -> None:

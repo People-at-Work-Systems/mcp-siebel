@@ -252,9 +252,13 @@ def test_spec_reload_failure_keeps_last_valid(tmp_path) -> None:
 
 def test_spec_subset_is_accepted_not_mirrored(tmp_path) -> None:
     """There is no handler map to mirror any more: a spec with a subset of the
-    bundled tools simply serves that subset."""
-    reg = _registry_with_spec(tmp_path, {"query_data": _bundled_tools()["query_data"]})
-    assert set(reg._tools) == {"query_data"}
+    bundled tools (including the session tool) simply serves that subset."""
+    tools = {
+        "query_data": _bundled_tools()["query_data"],
+        "authenticate": _bundled_tools()["authenticate"],
+    }
+    reg = _registry_with_spec(tmp_path, tools)
+    assert set(reg._tools) == {"query_data", "authenticate"}
     assert reg._tools["query_data"].description == _bundled_tools()["query_data"]["description"]
 
 
@@ -316,6 +320,51 @@ def test_spec_duplicate_tool_name_rejected(tmp_path) -> None:
     settings.tools_spec_path = str(spec)
     reg = ToolRegistry(settings)
     assert reg._tools == {}
+
+
+# ---------------------------------------------------------------------------
+# Session tool — exactly one entry marks establishes_session; it must be
+# always_enabled and access "read". (Zero/two -> load error.)
+# ---------------------------------------------------------------------------
+
+
+def test_spec_zero_session_tools_rejected(tmp_path) -> None:
+    """A spec with no establishes_session tool is rejected — exactly one is
+    required so the transports have a session-establishment tool to call."""
+    reg = _registry_with_spec(tmp_path, {"query_data": _bundled_tools()["query_data"]})
+    assert reg._tools == {}
+
+
+def test_spec_two_session_tools_rejected(tmp_path) -> None:
+    spec = _full_valid_spec()
+    spec["query_data"] = {**spec["query_data"], "establishes_session": True}
+    reg = _registry_with_spec(tmp_path, spec)
+    assert reg._tools == {}
+
+
+def test_spec_session_tool_must_be_always_enabled(tmp_path) -> None:
+    spec = _full_valid_spec()
+    auth = {k: v for k, v in spec["authenticate"].items() if k != "always_enabled"}
+    auth["establishes_session"] = True
+    spec["authenticate"] = auth
+    reg = _registry_with_spec(tmp_path, spec)
+    assert reg._tools == {}
+
+
+def test_spec_session_tool_must_be_read_access(tmp_path) -> None:
+    """The session tool must be access 'read' (it is always_enabled, and
+    always_enabled is only allowed with read — so this is rejected at load)."""
+    spec = _full_valid_spec()
+    spec["authenticate"] = {**spec["authenticate"], "access": "write"}
+    reg = _registry_with_spec(tmp_path, spec)
+    assert reg._tools == {}
+
+
+def test_spec_session_tool_name_exposed(tmp_path) -> None:
+    """The registry exposes the session tool's name so transports need not
+    hard-code it."""
+    reg = _registry_with_spec(tmp_path, _full_valid_spec())
+    assert reg.session_tool_name == "authenticate"
 
 
 # ---------------------------------------------------------------------------

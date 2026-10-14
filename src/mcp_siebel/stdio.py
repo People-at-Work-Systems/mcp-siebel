@@ -46,14 +46,15 @@ settings = load_settings()
 sessions = SessionStore(settings.session_timeout_ms / 1000)
 registry = ToolRegistry(settings)
 
-_AUTH_INSTRUCTIONS = """\
+_session_tool = registry.session_tool_name
+_AUTH_INSTRUCTIONS = f"""\
 ## Authentication
 
-Call `authenticate` with the user's Siebel username and password before calling
+Call `{_session_tool}` with the user's Siebel username and password before calling
 any other tool. The response includes a `session_id` — pass this as the
 `session_id` argument to every subsequent tool call in the conversation.
 
-If a tool returns an authentication error, call `authenticate` again to obtain a
+If a tool returns an authentication error, call `{_session_tool}` again to obtain a
 fresh session_id and retry the operation.
 
 """
@@ -84,19 +85,24 @@ def _load_instructions() -> str:
 
 _INSTRUCTIONS = _load_instructions()
 
-# Injected onto every non-authenticate tool's schema at list time. The spec JSON
-# is the source of truth for each tool's own schema (types included); session_id
-# is transport-specific to stdio (the client passes it as a tool argument), so it
-# stays here rather than in the spec file.
+# Injected onto every non-session tool's schema at list time. The spec JSON is
+# the source of truth for each tool's own schema (types included); session_id is
+# transport-specific to stdio (the client passes it as a tool argument), so it
+# stays here rather than in the spec file. The session tool's name comes from the
+# spec (registry.session_tool_name), not a hard-coded literal.
 _SESSION_ID_PROP: dict[str, Any] = {
     "type": "string",
-    "description": "Session ID returned by the authenticate tool. Required for every tool call except authenticate.",
+    "description": (
+        f"Session ID returned by the {_session_tool} tool. "
+        f"Required for every tool call except {_session_tool}."
+    ),
 }
 
 
 async def _list_tools(
     ctx: ServerRequestContext[Any], params: PaginatedRequestParams | None
 ) -> ListToolsResult:
+    session_tool = registry.session_tool_name
     tools = []
     for t in registry.list_tools():
         # The registry already serves the final, typed input_schema from the
@@ -104,7 +110,7 @@ async def _list_tools(
         # below never mutates the cached schema dict in the registry.
         schema = {k: (v.copy() if isinstance(v, dict) else v) for k, v in t["input_schema"].items()}
         props = dict(schema.get("properties", {}))
-        if t["name"] != "authenticate":
+        if t["name"] != session_tool:
             props["session_id"] = _SESSION_ID_PROP
         schema["properties"] = props
         tools.append(Tool(name=t["name"], description=t["description"], input_schema=schema))
@@ -118,13 +124,13 @@ async def _call_tool(
     args = dict(params.arguments or {})
     session_id = args.pop("session_id", None)
     session = sessions.get(session_id)
-    if name == "authenticate" and session is None:
+    if name == registry.session_tool_name and session is None:
         session = sessions.create()
     result = await registry.call(name, args, session)
     content = result.get("content") or [{"type": "text", "text": str(result)}]
     texts: list[ContentBlock] = [TextContent(type="text", text=c["text"]) for c in content if c.get("type") == "text"]
     # Append session_id so Claude can pass it to every subsequent tool call
-    if name == "authenticate" and session is not None:
+    if name == registry.session_tool_name and session is not None:
         texts.append(TextContent(type="text", text=f"session_id: {session.session_id}"))
     return CallToolResult(content=texts, is_error=bool(result.get("isError")))
 

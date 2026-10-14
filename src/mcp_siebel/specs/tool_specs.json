@@ -84,6 +84,7 @@
     },
     "authenticate": {
       "always_enabled": true,
+      "establishes_session": true,
       "description": "Authenticate or register a Siebel user for this session.",
       "handler": "mcp_siebel.handlers.auth:_authenticate",
       "input_schema": {
