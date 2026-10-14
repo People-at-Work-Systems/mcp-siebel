@@ -128,7 +128,7 @@ class SessionStore:
         if session is None:
             return None
         if self._expired(session):
-            # An expired id is treated as not found — callers re-authenticate.
+            # An expired id is treated as not found — callers must establish a new session.
             del self._sessions[key]
             return None
         return session

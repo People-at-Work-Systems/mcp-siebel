@@ -35,7 +35,7 @@ class AppSettings(BaseSettings):
     # The probe BO/BC must be (a) REST-enabled and (b) NOT accessible to an
     # unauthenticated/guest identity — a bogus SSO header must yield an error
     # (>=400), not a 200. If it returns 200 for guest (e.g. Account on instances
-    # that grant guest read access), authenticate can't detect an invalid header
+    # that grant guest read access), the probe can't detect an invalid header
     # and will report success. Override per instance; Account/Account is a
     # reasonable default for standard Siebel sample DBs.
     probe_business_object: str = "Account"

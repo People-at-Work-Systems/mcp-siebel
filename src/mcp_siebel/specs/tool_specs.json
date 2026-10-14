@@ -17,7 +17,7 @@
       "type": "object"
     },
     "fields": {
-      "description": "Comma-separated list of REAL Siebel field names to return, e.g. 'Name,Status'. Look the valid names up with describe_business_object first. Omit to return the default field set. NEVER pass placeholders such as '<?>'; if you are unsure of the field names, call describe_business_object before querying.",
+      "description": "List of REAL Siebel field names to return, e.g. [\"Name\", \"Status\"]. Look the valid names up with describe_business_object first. Omit to return the default field set. NEVER pass placeholders such as '<?>'; if you are unsure of the field names, call describe_business_object before querying.",
       "items": {
         "type": "string"
       },
@@ -28,11 +28,11 @@
       "type": "string"
     },
     "offset": {
-      "description": "Zero-based row offset to start paging from, as a string number, e.g. '100'.",
+      "description": "Zero-based row offset to start paging from, e.g. 100.",
       "type": "integer"
     },
     "page_size": {
-      "description": "Page size 1-100 as a string number, e.g. '20'. Default 20.",
+      "description": "Page size 1-100, e.g. 20. Default 20.",
       "type": "integer"
     },
     "parent_id": {
@@ -338,7 +338,7 @@
       "input_schema": {
         "properties": {
           "lov_types": {
-            "description": "Comma-separated Siebel LOV type codes, e.g. 'ACCOUNT_STATUS'.",
+            "description": "Siebel LOV type codes, e.g. [\"ACCOUNT_STATUS\"].",
             "items": {
               "type": "string"
             },
@@ -575,7 +575,7 @@
             "$ref": "#/$defs/business_object"
           },
           "childlinks": {
-            "description": "Comma-separated child Business Component names to expand inline in the response.",
+            "description": "Child Business Component names to expand inline in the response.",
             "items": {
               "type": "string"
             },
@@ -687,7 +687,7 @@
       "input_schema": {
         "properties": {
           "count": {
-            "description": "Number of web results to return, as a string number, e.g. '5'.",
+            "description": "Number of web results to return, e.g. 5.",
             "type": "integer"
           },
           "query": {
