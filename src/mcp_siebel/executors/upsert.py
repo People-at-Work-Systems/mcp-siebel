@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..handlers._common import _error, _require_auth, _resolve_bo_bc, _text
 from ..kinds import _COMMON_FIELDS, _KindSpec, _SpecError
-from ..renderers import RENDERERS
+from ..renderers import RENDERERS, validate_render
 from ._validation import validate_bind_and_required
 
 if TYPE_CHECKING:
@@ -34,6 +34,15 @@ _UPSERT_REQUIRED_OPTIONS = frozenset({"operation", "scope", "render"})
 _UPSERT_BIND_KEYS = frozenset(
     {"business_object", "business_component", "data", "id", "parent_id", "child_business_component"}
 )
+# Per-kind bind value types: BO/BC/id/parent/child_bc are str; data is an object.
+_UPSERT_BIND_TYPES: dict[str, str] = {
+    "business_object": "str",
+    "business_component": "str",
+    "data": "object",
+    "id": "str",
+    "parent_id": "str",
+    "child_business_component": "str",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -58,8 +67,7 @@ def _validate_bc_upsert(entry: dict[str, Any], name: str, schema: dict[str, Any]
     if scope not in _SCOPES:
         raise _SpecError(f"bc_upsert entry {name!r} has invalid scope {scope!r} (expected 'root' or 'child')")
     render = entry.get("render")
-    if not isinstance(render, str) or render not in RENDERERS:
-        raise _SpecError(f"bc_upsert entry {name!r} has unknown render {render!r} (known: {sorted(RENDERERS)})")
+    validate_render(kind="bc_upsert", name=name, render=render, accepted_families={"upsert"})
     allowed = entry.get("allowed_fields")
     if allowed is not None and (
         not isinstance(allowed, list) or not all(isinstance(f, str) for f in allowed)
@@ -82,7 +90,18 @@ def _validate_bc_upsert(entry: dict[str, Any], name: str, schema: dict[str, Any]
         schema=schema,
         known_bind_keys=_UPSERT_BIND_KEYS,
         required_params=required_params,
+        bind_types=_UPSERT_BIND_TYPES,
     )
+    # Policy: binding business_component locks the tool to a fixed BC, so the
+    # caller's data must be constrained by a non-empty allowed_fields list —
+    # otherwise a bound-BC tool accepts arbitrary field names, defeating the
+    # point of pinning the BC.
+    bind = entry.get("bind")
+    if isinstance(bind, dict) and "business_component" in bind:
+        if not isinstance(allowed, list) or not allowed:
+            raise _SpecError(
+                f"bc_upsert entry {name!r}: binding business_component requires a non-empty allowed_fields list"
+            )
 
 
 # ---------------------------------------------------------------------------

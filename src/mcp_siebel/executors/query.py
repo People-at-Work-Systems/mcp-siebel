@@ -30,7 +30,7 @@ from ..handlers._common import (
     _validate_fields_arg,
 )
 from ..kinds import _COMMON_FIELDS, _KindSpec, _SpecError
-from ..renderers import RENDERERS
+from ..renderers import RENDERERS, validate_render
 from ..siebel_client import SiebelError
 from ._validation import validate_bind_and_required
 
@@ -77,6 +77,21 @@ _BC_QUERY_BIND_KEYS = frozenset(
         "searchspec",
     }
 )
+
+# Per-kind bind value types, derived from what the executor does with each value
+# (str fields stay str; page_size/offset are ints; fields/childlinks are lists).
+_BC_QUERY_BIND_TYPES: dict[str, str] = {
+    "business_object": "str",
+    "business_component": "str",
+    "fields": "list[str]",
+    "page_size": "int",
+    "offset": "int",
+    "sort_spec": "str",
+    "childlinks": "list[str]",
+    "parent_id": "str",
+    "child_business_component": "str",
+    "searchspec": "str",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -128,8 +143,9 @@ def _validate_bc_query(entry: dict[str, Any], name: str, schema: dict[str, Any])
     if result not in _RESULTS:
         raise _SpecError(f"bc_query entry {name!r} has invalid result {result!r} (expected 'records' or 'count')")
     render = entry.get("render")
-    if not isinstance(render, str) or render not in RENDERERS:
-        raise _SpecError(f"bc_query entry {name!r} has unknown render {render!r} (known: {sorted(RENDERERS)})")
+    # records -> 'query'-family render, count -> 'count'-family render.
+    accepted = {"query"} if result == "records" else {"count"}
+    validate_render(kind="bc_query", name=name, render=render, accepted_families=accepted)
 
     props = set((schema.get("properties") or {}).keys())
     tmpl = entry.get("searchspec_template")
@@ -171,6 +187,7 @@ def _validate_bc_query(entry: dict[str, Any], name: str, schema: dict[str, Any])
         schema=schema,
         known_bind_keys=_BC_QUERY_BIND_KEYS,
         required_params=required_params,
+        bind_types=_BC_QUERY_BIND_TYPES,
     )
 
 

@@ -199,6 +199,86 @@ def test_upsert_bind_overlap_with_input_schema_rejected(tmp_path) -> None:
         )
 
 
+# --- renderer families + bind type checks + bind-BC policy (step 4 Task A) ---
+
+
+def test_upsert_render_wrong_family_rejected(tmp_path) -> None:
+    with pytest.raises(_SpecError, match="family 'count'"):
+        _reg(
+            tmp_path,
+            {
+                "x": _upsert(
+                    render="count_prose",
+                    bind={"business_object": "Account"},
+                    props={"data": {"type": "object"}},
+                    required=["data"],
+                )
+            },
+        )
+
+
+def test_upsert_bind_bc_requires_allowed_fields(tmp_path) -> None:
+    """Binding business_component locks the tool to a fixed BC; the caller's data
+    must then be constrained by a non-empty allowed_fields list."""
+    with pytest.raises(_SpecError, match="allowed_fields"):
+        _reg(
+            tmp_path,
+            {
+                "x": _upsert(
+                    bind={"business_object": "Account", "business_component": "Account"},
+                    props={"data": {"type": "object"}},
+                    required=["data"],
+                )
+            },
+        )
+
+
+def test_upsert_bind_bc_empty_allowed_fields_rejected(tmp_path) -> None:
+    with pytest.raises(_SpecError, match="allowed_fields"):
+        _reg(
+            tmp_path,
+            {
+                "x": _upsert(
+                    bind={"business_object": "Account", "business_component": "Account"},
+                    allowed_fields=[],
+                    props={"data": {"type": "object"}},
+                    required=["data"],
+                )
+            },
+        )
+
+
+def test_upsert_bind_data_wrong_type_rejected(tmp_path) -> None:
+    with pytest.raises(_SpecError, match="data.*object"):
+        _reg(
+            tmp_path,
+            {
+                "x": _upsert(
+                    bind={"business_object": "Account", "business_component": "Account", "data": "x"},
+                    allowed_fields=["Name"],
+                )
+            },
+        )
+
+
+def test_upsert_bind_id_wrong_type_rejected(tmp_path) -> None:
+    with pytest.raises(_SpecError, match="id.*string"):
+        _reg(
+            tmp_path,
+            {
+                "x": _upsert(
+                    operation="update",
+                    scope="root",
+                    render="update_prose",
+                    bind={"business_object": "Account", "business_component": "Account", "id": 123},
+                    allowed_fields=["Name"],
+                    props={"data": {"type": "object"}},
+                    required=["data"],
+                )
+            },
+        )
+
+
 # ---------------------------------------------------------------------------
 # bc_upsert — a JSON-only write tool is gated by allow_write (no code change)
 # ---------------------------------------------------------------------------
@@ -247,6 +327,7 @@ async def test_upsert_bind_supplies_bo_bc(tmp_path) -> None:
                 bind={"business_object": "Account", "business_component": "Account"},
                 props={"data": {"type": "object"}},
                 required=["data"],
+                allowed_fields=["Name"],
                 render="create_prose",
             )
         },
@@ -273,6 +354,7 @@ async def test_upsert_create_json_render(tmp_path) -> None:
                 bind={"business_object": "Account", "business_component": "Account"},
                 props={"data": {"type": "object"}},
                 required=["data"],
+                allowed_fields=["Name"],
                 render="create_json",
             )
         },
@@ -297,6 +379,7 @@ async def test_upsert_update_root(tmp_path) -> None:
                 bind={"business_object": "Account", "business_component": "Account"},
                 props={"id": {"type": "string"}, "data": {"type": "object"}},
                 required=["id", "data"],
+                allowed_fields=["Name"],
             )
         },
         allow_write=True,
@@ -327,6 +410,7 @@ async def test_upsert_create_child(tmp_path) -> None:
                     "data": {"type": "object"},
                 },
                 required=["parent_id", "child_business_component", "data"],
+                allowed_fields=["Last Name"],
             )
         },
         allow_write=True,
@@ -402,6 +486,7 @@ async def test_upsert_rejects_empty_data(tmp_path) -> None:
                 bind={"business_object": "Account", "business_component": "Account"},
                 props={"data": {"type": "object"}},
                 required=["data"],
+                allowed_fields=["Name"],
                 render="create_prose",
             )
         },
@@ -425,6 +510,7 @@ async def test_upsert_bo_not_found(tmp_path) -> None:
                 bind={"business_object": "Nope", "business_component": "Nope"},
                 props={"data": {"type": "object"}},
                 required=["data"],
+                allowed_fields=["Name"],
                 render="create_prose",
             )
         },
@@ -448,6 +534,7 @@ async def test_upsert_siebel_error_is_masked(tmp_path) -> None:
                 bind={"business_object": "Account", "business_component": "Account"},
                 props={"data": {"type": "object"}},
                 required=["data"],
+                allowed_fields=["Name"],
                 render="create_prose",
             )
         },
@@ -470,6 +557,7 @@ async def test_upsert_unauthenticated_returns_error(tmp_path) -> None:
                 bind={"business_object": "Account", "business_component": "Account"},
                 props={"data": {"type": "object"}},
                 required=["data"],
+                allowed_fields=["Name"],
                 render="create_prose",
             )
         },
@@ -503,6 +591,26 @@ def test_delete_requires_id(tmp_path) -> None:
 def test_delete_unknown_bind_key_rejected(tmp_path) -> None:
     with pytest.raises(_SpecError, match="not known executor parameters"):
         _reg(tmp_path, {"x": _delete(bind={"bogus": "x"}, props={"id": {"type": "string"}}, required=["id"])})
+
+
+def test_delete_render_wrong_family_rejected(tmp_path) -> None:
+    with pytest.raises(_SpecError, match="family 'upsert'"):
+        _reg(
+            tmp_path,
+            {
+                "x": _delete(
+                    render="create_prose",
+                    bind={"business_object": "Account"},
+                    props={"id": {"type": "string"}},
+                    required=["id"],
+                )
+            },
+        )
+
+
+def test_delete_bind_id_wrong_type_rejected(tmp_path) -> None:
+    with pytest.raises(_SpecError, match="id.*string"):
+        _reg(tmp_path, {"x": _delete(bind={"business_object": "Account", "id": 123})})
 
 
 # ---------------------------------------------------------------------------

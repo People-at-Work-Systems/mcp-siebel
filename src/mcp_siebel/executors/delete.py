@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..handlers._common import _require_auth, _resolve_bo_bc, _text
 from ..kinds import _COMMON_FIELDS, _KindSpec, _SpecError
-from ..renderers import RENDERERS
+from ..renderers import RENDERERS, validate_render
 from ._validation import validate_bind_and_required
 
 if TYPE_CHECKING:
@@ -27,6 +27,7 @@ _DELETE_ALLOWED_OPTIONS = frozenset({"render", "bind"})
 _DELETE_REQUIRED_OPTIONS = frozenset({"render"})
 # Parameters execute_bc_delete actually reads from the effective args.
 _DELETE_BIND_KEYS = frozenset({"business_object", "business_component", "id"})
+_DELETE_BIND_TYPES: dict[str, str] = {"business_object": "str", "business_component": "str", "id": "str"}
 
 
 # ---------------------------------------------------------------------------
@@ -43,8 +44,7 @@ def _validate_bc_delete(entry: dict[str, Any], name: str, schema: dict[str, Any]
     if missing:
         raise _SpecError(f"bc_delete entry {name!r} missing required option(s) {sorted(missing)}")
     render = entry.get("render")
-    if not isinstance(render, str) or render not in RENDERERS:
-        raise _SpecError(f"bc_delete entry {name!r} has unknown render {render!r} (known: {sorted(RENDERERS)})")
+    validate_render(kind="bc_delete", name=name, render=render, accepted_families={"delete"})
     validate_bind_and_required(
         kind="bc_delete",
         entry=entry,
@@ -52,6 +52,7 @@ def _validate_bc_delete(entry: dict[str, Any], name: str, schema: dict[str, Any]
         schema=schema,
         known_bind_keys=_DELETE_BIND_KEYS,
         required_params=("business_object", "id"),
+        bind_types=_DELETE_BIND_TYPES,
     )
 
 

@@ -199,6 +199,104 @@ def test_bc_query_bind_satisfies_required_coverage(tmp_path) -> None:
     assert "x" in reg._tools
 
 
+# --- renderer families + bind type checks (step 4 Task A) -------------------
+
+
+def test_bc_query_records_result_rejects_count_family_render(tmp_path) -> None:
+    """result=records must use a 'query'-family render, not a 'count' one."""
+    with pytest.raises(_SpecError, match="family 'count'"):
+        _reg(
+            tmp_path,
+            {
+                "x": _bcq(
+                    result="records",
+                    render="count_prose",
+                    bind={"business_object": "Account"},
+                    props={"searchspec": {"type": "string"}},
+                )
+            },
+        )
+
+
+def test_bc_query_count_result_rejects_query_family_render(tmp_path) -> None:
+    """result=count must use a 'count'-family render, not a 'query' one."""
+    with pytest.raises(_SpecError, match="family 'query'"):
+        _reg(
+            tmp_path,
+            {
+                "x": _bcq(
+                    result="count",
+                    render="query_prose",
+                    bind={"business_object": "Account"},
+                    props={"searchspec": {"type": "string"}},
+                )
+            },
+        )
+
+
+def test_bc_query_count_json_render_loads(tmp_path) -> None:
+    """count_json is a 'count'-family render usable with result=count."""
+    reg = _reg(
+        tmp_path,
+        {
+            "x": _bcq(
+                result="count",
+                render="count_json",
+                bind={"business_object": "Account", "business_component": "Account"},
+                props={"searchspec": {"type": "string"}},
+            )
+        },
+    )
+    assert "x" in reg._tools
+
+
+def test_bc_query_bind_page_size_wrong_type_rejected(tmp_path) -> None:
+    with pytest.raises(_SpecError, match="page_size.*non-negative integer"):
+        _reg(
+            tmp_path,
+            {
+                "x": _bcq(
+                    bind={"business_object": "Account", "page_size": "20"}, props={"searchspec": {"type": "string"}}
+                )
+            },
+        )
+
+
+def test_bc_query_bind_fields_wrong_type_rejected(tmp_path) -> None:
+    with pytest.raises(_SpecError, match="fields.*list of strings"):
+        _reg(
+            tmp_path,
+            {
+                "x": _bcq(
+                    bind={"business_object": "Account", "fields": "Name"}, props={"searchspec": {"type": "string"}}
+                )
+            },
+        )
+
+
+def test_bc_query_bind_business_object_wrong_type_rejected(tmp_path) -> None:
+    with pytest.raises(_SpecError, match="business_object.*string"):
+        _reg(tmp_path, {"x": _bcq(bind={"business_object": 123}, props={"searchspec": {"type": "string"}})})
+
+
+@pytest.mark.asyncio
+async def test_bc_query_bind_page_size_int_is_accepted(tmp_path) -> None:
+    """A correctly-typed int bind for page_size flows through to the client."""
+    result = SiebelQueryResult(items=[{"Id": "1"}], total_count=1, has_more=False, offset=0, page_size=5)
+    reg = _reg(
+        tmp_path,
+        {
+            "x": _bcq(
+                bind={"business_object": "Account", "business_component": "Account", "page_size": 5},
+                props={"searchspec": {"type": "string"}},
+            )
+        },
+    )
+    session, client = _session(result)
+    await reg.call("x", {"searchspec": "[Name] LIKE 'A*'"}, session)
+    assert client.query.call_args.kwargs["page_size"] == 5
+
+
 # ---------------------------------------------------------------------------
 # bind — fixed values merged with the caller's args
 # ---------------------------------------------------------------------------
@@ -344,7 +442,7 @@ async def test_bc_query_count_404_empty_reflects_forced_page_size(tmp_path) -> N
         {
             "acct_count_json": _bcq(
                 result="count",
-                render="query_json",
+                render="count_json",
                 bind={"business_object": "Account", "business_component": "Account"},
                 props={"searchspec": {"type": "string"}},
             )
