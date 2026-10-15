@@ -262,7 +262,10 @@
     },
     "describe_business_object": {
       "description": "Get field schema for a Siebel Business Object/Component.",
-      "handler": "mcp_siebel.handlers.metadata:_describe_business_object",
+      "kind": "bc_describe",
+      "access": "read",
+      "source": "bc_descriptor",
+      "render": "describe_bc_prose",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -276,9 +279,7 @@
           "business_object"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "read"
+      }
     },
     "describe_business_object_json": {
       "description": "REST data API field list for a BC as JSON \u2014 the navigator's result-list columns (reliable; no LOV types).",
@@ -303,7 +304,10 @@
     },
     "describe_repository": {
       "description": "Query Siebel repository metadata for the full field list of a Business Component. Returns richer data than describe_business_object: pre/post default values, LOV picklist types, calculated field flags, join info, and fields that are valid in searchspec/sort_spec but not returned by the REST data API. Always call this when you need fields not listed by describe_business_object, before create/update to check required field defaults, or when unsure about a field name or picklist values.",
-      "handler": "mcp_siebel.handlers.metadata:_describe_repository",
+      "kind": "bc_describe",
+      "access": "read",
+      "source": "repository",
+      "render": "repository_prose",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -317,13 +321,14 @@
           "business_object"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "read"
+      }
     },
     "describe_repository_json": {
       "description": "Field metadata for a BC as JSON (name, type, LOV type, flags) \u2014 for the navigator's filter chips.",
-      "handler": "mcp_siebel.handlers.metadata:_describe_repository_json",
+      "kind": "bc_describe",
+      "access": "read",
+      "source": "repository",
+      "render": "repository_json",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -337,9 +342,7 @@
           "business_object"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "read"
+      }
     },
     "get_list_of_values": {
       "description": "Fetch Siebel List of Values for LOV type codes.",
@@ -440,23 +443,25 @@
     },
     "list_business_objects": {
       "description": "List all available Siebel Business Objects.",
-      "handler": "mcp_siebel.handlers.metadata:_list_business_objects",
+      "kind": "bc_describe",
+      "access": "read",
+      "source": "business_objects",
+      "render": "list_prose",
       "input_schema": {
         "properties": {},
         "type": "object"
-      },
-      "kind": "python",
-      "access": "read"
+      }
     },
     "list_business_objects_json": {
       "description": "List all available Siebel Business Objects as structured JSON (for the CRM navigator).",
-      "handler": "mcp_siebel.handlers.metadata:_list_business_objects_json",
+      "kind": "bc_describe",
+      "access": "read",
+      "source": "business_objects",
+      "render": "list_json",
       "input_schema": {
         "properties": {},
         "type": "object"
-      },
-      "kind": "python",
-      "access": "read"
+      }
     },
     "query_child_records": {
       "description": "Query child records under a parent record.",

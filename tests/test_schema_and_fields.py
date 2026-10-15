@@ -27,15 +27,13 @@ import pytest
 
 from mcp_siebel.config import AppSettings
 from mcp_siebel.handlers._common import _validate_fields_arg
-from mcp_siebel.handlers.metadata import _describe_business_object
-from mcp_siebel.schema_cache import SchemaCache
 from mcp_siebel.siebel_client import (
     SiebelBCDescriptor,
     SiebelError,
     SiebelFieldDescriptor,
     SiebelQueryResult,
 )
-from mcp_siebel.tools import SessionContext, ToolContext, ToolRegistry
+from mcp_siebel.tools import SessionContext, ToolRegistry
 
 # ---------------------------------------------------------------------------
 # Registry-served schema (authored in tool_specs.json, $ref-resolved by the loader)
@@ -127,11 +125,14 @@ async def test_query_data_field_error_retries_with_id_not_none():
 
 
 # ---------------------------------------------------------------------------
-# _describe_business_object — BO fallback on SBL-EAI-50257
+# describe_business_object — BO fallback on SBL-EAI-50257 (driven via the
+# registry, so it stays valid now that the tool uses the bc_describe executor)
 # ---------------------------------------------------------------------------
 
 
-def _describe_ctx(get_descriptor_side_effect, resolve_map: dict[str, str]) -> ToolContext:
+def _describe_reg_and_session(
+    get_descriptor_side_effect, resolve_map: dict[str, str]
+) -> tuple[ToolRegistry, SessionContext]:
     cache = AsyncMock()
 
     async def resolve(name: str) -> str | None:
@@ -139,13 +140,9 @@ def _describe_ctx(get_descriptor_side_effect, resolve_map: dict[str, str]) -> To
 
     cache.resolve_business_object = AsyncMock(side_effect=resolve)
     cache.get_descriptor = AsyncMock(side_effect=get_descriptor_side_effect)
-    # field_summary is a sync @staticmethod on the real SchemaCache; the
-    # AsyncMock would otherwise return a coroutine, so bind the real one.
-    cache.field_summary = SchemaCache.field_summary
-
     client = AsyncMock()
     session = SessionContext(session_id="s1", username="t", client=client, cache=cache)
-    return ToolContext(settings=AppSettings(), session=session)
+    return ToolRegistry(AppSettings()), session
 
 
 @pytest.mark.asyncio
@@ -163,8 +160,10 @@ async def test_describe_falls_back_to_child_own_bo_on_50257():
             )
         raise AssertionError(f"unexpected describe call: {bo}/{bc}")
 
-    ctx = _describe_ctx(get_descriptor, {"account": "Account", "contact": "Contact"})
-    response = await _describe_business_object({"business_object": "Account", "business_component": "Contact"}, ctx)
+    reg, session = _describe_reg_and_session(get_descriptor, {"account": "Account", "contact": "Contact"})
+    response = await reg.call(
+        "describe_business_object", {"business_object": "Account", "business_component": "Contact"}, session
+    )
     text = response["content"][0]["text"]
     assert "Contact / Contact" in text  # described under Contact's own BO, not Account
     assert "Last Name" in text
@@ -178,6 +177,6 @@ async def test_describe_returns_error_when_bc_is_the_bo_itself():
     async def get_descriptor(bo: str, bc: str) -> SiebelBCDescriptor:
         raise SiebelError("not mapped", 500, '{"ERROR":"...SBL-EAI-50257..."}')
 
-    ctx = _describe_ctx(get_descriptor, {"account": "Account"})
-    response = await _describe_business_object({"business_object": "Account"}, ctx)
+    reg, session = _describe_reg_and_session(get_descriptor, {"account": "Account"})
+    response = await reg.call("describe_business_object", {"business_object": "Account"}, session)
     assert response.get("isError") is True

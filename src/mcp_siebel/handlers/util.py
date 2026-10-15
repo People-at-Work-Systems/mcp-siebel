@@ -1,4 +1,5 @@
-"""Utility handlers: date arithmetic, query-syntax reference, web search."""
+"""Utility handlers: date arithmetic, web search. The query-syntax reference
+moved to a ``static_text`` spec entry (see tool_specs.json)."""
 
 from __future__ import annotations
 
@@ -11,17 +12,6 @@ from ._common import _error, _text
 
 if TYPE_CHECKING:
     from ..tools import ToolContext
-
-
-async def _get_query_syntax(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    return _text(
-        "Use <> for not equal; never use !=.\n"
-        "Field names go in square brackets: [Status] = 'Open'.\n"
-        "Use LIKE with * wildcards: [Name] LIKE 'Acme*'.\n"
-        "Combine with AND/OR and parenthesize compound expressions.\n"
-        "Dates may use Today(), Timestamp(), and arithmetic such as Today()-30.\n"
-        "Siebel may return 404 when a query has no records."
-    )
 
 
 async def _calculate_date(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:

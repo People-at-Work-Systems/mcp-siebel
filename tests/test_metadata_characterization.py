@@ -6,8 +6,8 @@ get_query_syntax.
 
 These pin the current output (prose + JSON) and error paths by mocking at the
 SiebelClient / SchemaCache level (cache.resolve_business_object /
-get_descriptor / get_business_objects / field_summary, and
-client.describe_repository_bc) and driving each tool through
+get_descriptor / get_business_objects, and client.describe_repository_bc) and
+driving each tool through
 ``ToolRegistry.call`` — so they are agnostic to the tool's ``kind`` and pass
 unchanged once the tools move from kind "python" to the new executors.
 
@@ -26,7 +26,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 from mcp_siebel.config import AppSettings
-from mcp_siebel.schema_cache import SchemaCache
 from mcp_siebel.siebel_client import SiebelBCDescriptor, SiebelError, SiebelFieldDescriptor
 from mcp_siebel.tools import SessionContext, ToolRegistry
 
@@ -43,8 +42,8 @@ def _cache(
 ) -> AsyncMock:
     """A SchemaCache-level mock. ``resolve`` is the return value of
     resolve_business_object; pass a side_effect via ``descriptor_side_effect`` for
-    the fallback path. field_summary is the real static method so the prose
-    output is the real format (the bc_describe renderer must match it)."""
+    the fallback path. (The bc_describe renderer owns the field-summary format, so
+    no field_summary mock is needed.)"""
     cache = AsyncMock()
     default_bos = business_objects if business_objects is not None else ["Account"]
     cache.get_business_objects = AsyncMock(return_value=default_bos)
@@ -56,7 +55,6 @@ def _cache(
         cache.get_descriptor = AsyncMock(side_effect=descriptor_side_effect)
     else:
         cache.get_descriptor = AsyncMock(return_value=descriptor)
-    cache.field_summary = SchemaCache.field_summary
     return cache
 
 
