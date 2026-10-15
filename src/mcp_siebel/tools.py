@@ -277,12 +277,14 @@ _KINDS: dict[str, _KindSpec] = {
 # import graph acyclic — the executor modules import only kinds/renderers/
 # handlers at runtime, not tools).
 from .executors.delete import DELETE_KIND  # noqa: E402
+from .executors.describe import DESCRIBE_KIND  # noqa: E402
 from .executors.query import BC_QUERY_KIND  # noqa: E402
 from .executors.upsert import UPSERT_KIND  # noqa: E402
 
 _KINDS[BC_QUERY_KIND.name] = BC_QUERY_KIND
 _KINDS[UPSERT_KIND.name] = UPSERT_KIND
 _KINDS[DELETE_KIND.name] = DELETE_KIND
+_KINDS[DESCRIBE_KIND.name] = DESCRIBE_KIND
 
 
 def _resolve_handler(handler_ref: Any) -> ToolHandler:

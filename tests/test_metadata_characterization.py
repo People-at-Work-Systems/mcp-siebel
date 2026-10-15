@@ -202,19 +202,33 @@ async def test_describe_business_object_json_bo_not_found() -> None:
 
 
 @pytest.mark.asyncio
-async def test_describe_business_object_json_50257_no_fallback_current() -> None:
-    """CURRENT behavior: describe_business_object_json does NOT fall back on
-    SBL-EAI-50257 — it surfaces the masked Siebel error. Task C adds the fallback
-    to this tool and UPDATES this test to the new behavior in the same commit."""
-    cache = _cache(descriptor_side_effect=SiebelError("not mapped", 500, '{"ERROR":"...SBL-EAI-50257..."}'))
+async def test_describe_business_object_json_50257_child_bc_fallback() -> None:
+    """describe_business_object_json now applies the same SBL-EAI-50257 child-BC
+    fallback as the prose variant: re-resolve the BC's own BO and retry, so the
+    JSON carries the BC's own BO. (Task C added this fallback; the prior behavior
+    was a masked error with no fallback.)"""
+    own = SiebelBCDescriptor("Contact", "Contact", [SiebelFieldDescriptor("Last Name", "Text", max_length=50)])
+    cache = _cache(
+        resolve={"Account": "Account", "Contact": "Contact"},
+        descriptor_side_effect=[
+            SiebelError("not mapped", 500, '{"ERROR":"...SBL-EAI-50257..."}'),
+            own,
+        ],
+    )
     reg = ToolRegistry(AppSettings())
     resp = await reg.call(
         "describe_business_object_json",
         {"business_object": "Account", "business_component": "Contact"},
         _auth_session(cache),
     )
-    assert resp.get("isError") is True
-    assert resp["content"][0]["text"] == _MASKED
+    assert resp.get("isError") is not True
+    assert json.loads(resp["content"][0]["text"]) == {
+        "business_object": "Contact",
+        "business_component": "Contact",
+        "fields": [
+            {"name": "Last Name", "type": "Text", "required": False, "read_only": False, "max_length": 50}
+        ],
+    }
 
 
 # --- describe_repository (prose) -------------------------------------------

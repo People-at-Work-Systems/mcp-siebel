@@ -282,7 +282,10 @@
     },
     "describe_business_object_json": {
       "description": "REST data API field list for a BC as JSON \u2014 the navigator's result-list columns (reliable; no LOV types).",
-      "handler": "mcp_siebel.handlers.metadata:_describe_business_object_json",
+      "kind": "bc_describe",
+      "access": "read",
+      "source": "bc_descriptor",
+      "render": "describe_bc_json",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -296,9 +299,7 @@
           "business_object"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "read"
+      }
     },
     "describe_repository": {
       "description": "Query Siebel repository metadata for the full field list of a Business Component. Returns richer data than describe_business_object: pre/post default values, LOV picklist types, calculated field flags, join info, and fields that are valid in searchspec/sort_spec but not returned by the REST data API. Always call this when you need fields not listed by describe_business_object, before create/update to check required field defaults, or when unsure about a field name or picklist values.",

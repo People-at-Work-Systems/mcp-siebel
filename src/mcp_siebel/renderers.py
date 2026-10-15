@@ -119,6 +119,142 @@ def _delete_prose(ctx: dict[str, Any]) -> dict[str, Any]:
     return _text(f"Deleted record {ctx['id']} from {ctx['business_object']}/{ctx['business_component']}.")
 
 
+# The describe renderers (families ``list`` / ``describe`` / ``repository``) take
+# a context dict built by the bc_describe executor: the resolved BO/BC plus
+# either the business-object list, a BC descriptor, or the repository field
+# list. Their output is byte-identical to the former metadata handlers.
+
+
+def _list_prose(ctx: dict[str, Any]) -> dict[str, Any]:
+    """The business-objects list: a header with the count then one bullet each."""
+    objects = ctx["business_objects"]
+    return _text(f"Available Business Objects ({len(objects)}):\n" + "\n".join(f"  - {item}" for item in objects))
+
+
+def _list_json(ctx: dict[str, Any]) -> dict[str, Any]:
+    """The business-objects list as a JSON array for a programmatic caller."""
+    return _json_text({"business_objects": ctx["business_objects"]})
+
+
+def _bc_field_prose(descriptor: Any) -> str:
+    """One ``  - name: type (flags)`` line per field (the former
+    SchemaCache.field_summary). Moved here so the renderer owns the format."""
+    lines: list[str] = []
+    for field in descriptor.fields:
+        flags: list[str] = []
+        if field.required:
+            flags.append("required")
+        if field.read_only:
+            flags.append("read-only")
+        if field.max_length:
+            flags.append(f"max {field.max_length}")
+        suffix = f" ({', '.join(flags)})" if flags else ""
+        lines.append(f"  - {field.name}: {field.type}{suffix}")
+    return "\n".join(lines)
+
+
+def _describe_bc_prose(ctx: dict[str, Any]) -> dict[str, Any]:
+    """The BC descriptor prose: a BO/BC header, the field list, a total."""
+    descriptor = ctx["descriptor"]
+    return _text(
+        f"{ctx['business_object']} / {ctx['business_component']}\n\n"
+        f"{_bc_field_prose(descriptor)}\n\nTotal fields: {len(descriptor.fields)}"
+    )
+
+
+def _describe_bc_json(ctx: dict[str, Any]) -> dict[str, Any]:
+    """The BC descriptor as JSON: BO/BC and per-field name/type/required/
+    read_only/max_length (the REST data-API field list)."""
+    descriptor = ctx["descriptor"]
+    return _json_text(
+        {
+            "business_object": ctx["business_object"],
+            "business_component": ctx["business_component"],
+            "fields": [
+                {
+                    "name": f.name,
+                    "type": f.type,
+                    "required": f.required,
+                    "read_only": f.read_only,
+                    "max_length": f.max_length,
+                }
+                for f in descriptor.fields
+            ],
+        }
+    )
+
+
+def _repository_prose(ctx: dict[str, Any]) -> dict[str, Any]:
+    """The repository field list prose: a header, a total, then one line per
+    field (sorted by name) with type, length, flags, LOV/join/defaults — or the
+    'no repository metadata' line when the field list is empty."""
+    bo, bc, fields = ctx["business_object"], ctx["business_component"], ctx["fields"]
+    if not fields:
+        return _text(
+            f"No repository metadata found for {bo}/{bc}. "
+            "The workspace metadata API may not be accessible. "
+            "Use describe_business_object for the REST field list instead."
+        )
+    lines = [f"Repository metadata: {bo} / {bc}", f"Total fields: {len(fields)}", ""]
+    for f in sorted(fields, key=lambda x: str(x.get("Name", ""))):
+        name = f.get("Name", "")
+        ftype = f.get("Type", "")
+        length = f.get("Length") or f.get("length") or ""
+        flags = []
+        if str(f.get("Required", "")).upper() in ("Y", "TRUE", "1"):
+            flags.append("Required")
+        if str(f.get("ReadOnly", "")).upper() in ("Y", "TRUE", "1"):
+            flags.append("ReadOnly")
+        if str(f.get("Calculated", "")).upper() in ("Y", "TRUE", "1"):
+            flags.append("Calculated")
+        pre = f.get("PreDefaultValue") or ""
+        post = f.get("PostDefaultValue") or ""
+        lov = f.get("LOVType") or f.get("LOV Type") or ""
+        join = f.get("JoinName") or f.get("Join") or ""
+
+        detail_parts = []
+        if length:
+            detail_parts.append(f"len={length}")
+        if flags:
+            detail_parts.append(", ".join(flags))
+        if lov:
+            detail_parts.append(f"LOV={lov}")
+        if join:
+            detail_parts.append(f"Join={join}")
+        if pre:
+            detail_parts.append(f"PreDefault={pre!r}")
+        if post:
+            detail_parts.append(f"PostDefault={post!r}")
+
+        detail = f"  [{', '.join(detail_parts)}]" if detail_parts else ""
+        lines.append(f"  {name} ({ftype}){detail}")
+    return _text("\n".join(lines))
+
+
+def _repository_json(ctx: dict[str, Any]) -> dict[str, Any]:
+    """The repository field list as JSON: per-field name/type/LOV/flags/length
+    (no empty-list special case — an empty field list serialises as ``[]``)."""
+    fields = ctx["fields"]
+    return _json_text(
+        {
+            "business_object": ctx["business_object"],
+            "business_component": ctx["business_component"],
+            "fields": [
+                {
+                    "name": f.get("Name", ""),
+                    "type": f.get("Type", ""),
+                    "lov_type": f.get("LOVType") or f.get("LOV Type") or "",
+                    "required": str(f.get("Required", "")).upper() in ("Y", "TRUE", "1"),
+                    "read_only": str(f.get("ReadOnly", "")).upper() in ("Y", "TRUE", "1"),
+                    "calculated": str(f.get("Calculated", "")).upper() in ("Y", "TRUE", "1"),
+                    "max_length": f.get("Length") or f.get("length"),
+                }
+                for f in fields
+            ],
+        }
+    )
+
+
 # Single source of truth: (name, family, renderer). ``family`` names the shape
 # of dict the renderer consumes; kinds accept only matching families (see
 # ``validate_render``). Adding a renderer means adding a tuple here.
@@ -133,6 +269,12 @@ _RENDERER_REGISTRY: list[tuple[str, str, Renderer]] = [
     ("update_prose", "upsert", _update_prose),
     ("child_create_prose", "upsert", _child_create_prose),
     ("delete_prose", "delete", _delete_prose),
+    ("list_prose", "list", _list_prose),
+    ("list_json", "list", _list_json),
+    ("describe_bc_prose", "describe", _describe_bc_prose),
+    ("describe_bc_json", "describe", _describe_bc_json),
+    ("repository_prose", "repository", _repository_prose),
+    ("repository_json", "repository", _repository_json),
 ]
 
 RENDERERS: dict[str, Renderer] = {name: fn for name, _, fn in _RENDERER_REGISTRY}
