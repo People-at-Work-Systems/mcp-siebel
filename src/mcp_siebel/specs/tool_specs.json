@@ -364,7 +364,16 @@
     },
     "get_query_syntax": {
       "description": "Return Siebel Query Language syntax reference.",
-      "handler": "mcp_siebel.handlers.util:_get_query_syntax",
+      "kind": "static_text",
+      "access": "read",
+      "text": [
+        "Use <> for not equal; never use !=.",
+        "Field names go in square brackets: [Status] = 'Open'.",
+        "Use LIKE with * wildcards: [Name] LIKE 'Acme*'.",
+        "Combine with AND/OR and parenthesize compound expressions.",
+        "Dates may use Today(), Timestamp(), and arithmetic such as Today()-30.",
+        "Siebel may return 404 when a query has no records."
+      ],
       "input_schema": {
         "properties": {
           "user_question": {
@@ -376,9 +385,7 @@
           "user_question"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "read"
+      }
     },
     "get_record": {
       "description": "Get a single Siebel record by Id.",
