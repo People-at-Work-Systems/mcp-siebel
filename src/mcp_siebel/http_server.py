@@ -41,8 +41,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
-from mcp.server import Server, ServerRequestContext
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from mcp.server import NotificationOptions, Server, ServerRequestContext
 from mcp.server.sse import SseServerTransport
 from mcp.types import (
     CallToolRequestParams,
@@ -55,10 +56,10 @@ from mcp.types import (
 )
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
-from starlette.requests import Request
 
 from .config import load_settings
 from .context import CorrelationMiddleware, session_id_var, turn_id_var
+from .notifications import McpSessionBroadcaster, SseSubscribers, make_spec_changed_hook, sse_events_stream
 from .tools import SessionStore, ToolRegistry
 from .watcher import ToolSpecWatcher
 
@@ -118,6 +119,11 @@ sessions = SessionStore(settings.session_timeout_ms / 1000)
 registry = ToolRegistry(settings)
 # Spec watcher: started on app startup, stopped on shutdown (see _lifespan).
 watcher = ToolSpecWatcher(registry, settings)
+# Spec-change fan-out: MCP sessions get tools/list_changed; REST /tools/events
+# SSE clients get a tools_changed event with the new spec_version.
+broadcaster = McpSessionBroadcaster()
+sse_subs = SseSubscribers()
+registry.subscribe(make_spec_changed_hook(broadcaster, sse_subs))
 started_at = time.monotonic()
 
 
@@ -131,6 +137,7 @@ _sse = SseServerTransport("/messages/")
 async def _list_tools(
     ctx: ServerRequestContext[Any], params: PaginatedRequestParams | None
 ) -> ListToolsResult:
+    broadcaster.add(getattr(ctx, "session", None))  # capture for tools/list_changed
     return ListToolsResult(
         tools=[
             Tool(name=t["name"], description=t["description"], input_schema=t["input_schema"])
@@ -142,6 +149,7 @@ async def _list_tools(
 async def _call_tool(
     ctx: ServerRequestContext[Any], params: CallToolRequestParams
 ) -> CallToolResult:
+    broadcaster.add(getattr(ctx, "session", None))  # capture for tools/list_changed
     name = params.name
     args = dict(params.arguments or {})
     session_id = args.pop("session_id", None)
@@ -229,13 +237,33 @@ async def get_session(session_id: str) -> dict[str, Any]:
 
 
 @app.get("/tools", dependencies=[Depends(require_api_token)])
-async def list_tools() -> dict[str, Any]:
-    return {"tools": registry.list_tools()}
+async def list_tools(request: Request) -> Response:
+    """The exposed tool list, ETagged with the spec_version. If-None-Match that
+    matches the current version -> 304. The body carries spec_version too."""
+    snap = registry.snapshot()
+    etag = f'"{snap.spec_version}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    return JSONResponse(
+        content={"tools": snap.exposed_tools, "spec_version": snap.spec_version},
+        headers={"ETag": etag},
+    )
 
 
 @app.get("/mcp/tools", dependencies=[Depends(require_api_token)])
-async def list_mcp_tools() -> dict[str, Any]:
-    return await list_tools()
+async def list_mcp_tools(request: Request) -> Response:
+    return await list_tools(request)
+
+
+@app.get("/tools/events", dependencies=[Depends(require_api_token)])
+async def tools_events() -> StreamingResponse:
+    """SSE stream of tools_changed events (one per real spec change, with the
+    new spec_version) plus a periodic keepalive. Same auth as GET /tools."""
+    return StreamingResponse(
+        sse_events_stream(registry, sse_subs),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/sessions", dependencies=[Depends(require_api_token)])
@@ -269,7 +297,11 @@ async def call_mcp_tool(tool_name: str, request: ToolCallRequest) -> dict[str, A
 @app.get("/sse")
 async def sse_endpoint(request: Request) -> None:
     async with _sse.connect_sse(request.scope, request.receive, request._send) as streams:
-        await _mcp.run(streams[0], streams[1], _mcp.create_initialization_options())
+        await _mcp.run(
+            streams[0],
+            streams[1],
+            _mcp.create_initialization_options(NotificationOptions(tools_changed=True)),
+        )
 
 
 app.mount("/messages/", app=_sse.handle_post_message)

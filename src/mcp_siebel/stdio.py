@@ -27,7 +27,7 @@ import asyncio
 import os
 from typing import Any
 
-from mcp.server import Server, ServerRequestContext
+from mcp.server import NotificationOptions, Server, ServerRequestContext
 from mcp.server.stdio import stdio_server
 from mcp.types import (
     CallToolRequestParams,
@@ -40,6 +40,7 @@ from mcp.types import (
 )
 
 from .config import load_settings
+from .notifications import McpSessionBroadcaster, make_spec_changed_hook
 from .tools import SessionStore, ToolRegistry
 from .watcher import ToolSpecWatcher
 
@@ -47,6 +48,10 @@ settings = load_settings()
 sessions = SessionStore(settings.session_timeout_ms / 1000)
 registry = ToolRegistry(settings)
 watcher = ToolSpecWatcher(registry, settings)
+# Fan-out for tools/list_changed: every connected MCP session is captured from
+# the list/call handlers and notified on a spec change (see make_spec_changed_hook).
+broadcaster = McpSessionBroadcaster()
+registry.subscribe(make_spec_changed_hook(broadcaster))
 
 _session_tool = registry.session_tool_name
 _AUTH_INSTRUCTIONS = f"""\
@@ -104,6 +109,7 @@ _SESSION_ID_PROP: dict[str, Any] = {
 async def _list_tools(
     ctx: ServerRequestContext[Any], params: PaginatedRequestParams | None
 ) -> ListToolsResult:
+    broadcaster.add(getattr(ctx, "session", None))  # capture for tools/list_changed
     session_tool = registry.session_tool_name
     tools = []
     for t in registry.list_tools():
@@ -122,6 +128,7 @@ async def _list_tools(
 async def _call_tool(
     ctx: ServerRequestContext[Any], params: CallToolRequestParams
 ) -> CallToolResult:
+    broadcaster.add(getattr(ctx, "session", None))  # capture for tools/list_changed
     name = params.name
     args = dict(params.arguments or {})
     session_id = args.pop("session_id", None)
@@ -151,7 +158,11 @@ async def _run() -> None:
     watcher.start()
     try:
         async with stdio_server() as (read_stream, write_stream):
-            await _mcp.run(read_stream, write_stream, _mcp.create_initialization_options())
+            await _mcp.run(
+                read_stream,
+                write_stream,
+                _mcp.create_initialization_options(NotificationOptions(tools_changed=True)),
+            )
     finally:
         await watcher.stop()
 
