@@ -24,7 +24,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from .handlers._common import _format_record, _json_text, _text
+from .handlers._common import _format_hierarchical_record, _format_record, _json_text, _text
 from .kinds import _SpecError
 
 Renderer = Callable[[dict[str, Any]], dict[str, Any]]
@@ -117,6 +117,30 @@ def _child_create_prose(ctx: dict[str, Any]) -> dict[str, Any]:
 def _delete_prose(ctx: dict[str, Any]) -> dict[str, Any]:
     """The delete format: a single line confirming which record was removed."""
     return _text(f"Deleted record {ctx['id']} from {ctx['business_object']}/{ctx['business_component']}.")
+
+
+# The bc_read renderers (family ``record``) take a context dict built by the
+# bc_read executor: the resolved BO/BC, the record id, and the record the client
+# returned. Their output is byte-identical to the former get_record /
+# get_record_with_children handlers.
+
+
+def _record_prose(ctx: dict[str, Any]) -> dict[str, Any]:
+    """The single-record prose: a header naming the BO/BC and id, then the
+    record (one ``  key: value`` line per non-empty field)."""
+    return _text(
+        f"{ctx['business_object']}/{ctx['business_component']} record {ctx['id']}:\n{_format_record(ctx['record'])}"
+    )
+
+
+def _record_hierarchical_prose(ctx: dict[str, Any]) -> dict[str, Any]:
+    """The with-children record prose: same header, then the record with the
+    ``__``-prefixed child-availability keys stripped (see
+    ``_format_hierarchical_record``)."""
+    return _text(
+        f"{ctx['business_object']}/{ctx['business_component']} record {ctx['id']}:\n"
+        f"{_format_hierarchical_record(ctx['record'])}"
+    )
 
 
 # The describe renderers (families ``list`` / ``describe`` / ``repository``) take
@@ -269,6 +293,8 @@ _RENDERER_REGISTRY: list[tuple[str, str, Renderer]] = [
     ("update_prose", "upsert", _update_prose),
     ("child_create_prose", "upsert", _child_create_prose),
     ("delete_prose", "delete", _delete_prose),
+    ("record_prose", "record", _record_prose),
+    ("record_hierarchical_prose", "record", _record_hierarchical_prose),
     ("list_prose", "list", _list_prose),
     ("list_json", "list", _list_json),
     ("describe_bc_prose", "describe", _describe_bc_prose),
