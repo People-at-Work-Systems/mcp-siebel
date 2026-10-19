@@ -22,6 +22,7 @@ come from the spec, so without it the set of tools is unknown.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import logging
@@ -76,6 +77,11 @@ class ToolContext:
     # no ``preferred_fields`` section. Populated by ``ToolRegistry.call`` from
     # the registry's last-successful-load copy.
     preferred_fields: dict[str, list[str]] = field(default_factory=dict)
+    # Name of the spec's session-establishment tool, injected by
+    # ``ToolRegistry.call`` so the not-authenticated hint (and any other
+    # framework message) can name it without a hard-coded tool literal. Empty
+    # only when a context is built outside the registry (tests).
+    session_tool_name: str = ""
 
 
 @dataclass
@@ -105,6 +111,35 @@ class ToolSpec:
     # must be always_enabled + access "read". Authored in the spec, not
     # hard-coded here, so tools.py stays free of tool names.
     establishes_session: bool = False
+
+
+@dataclass(frozen=True)
+class ToolSnapshot:
+    """Immutable view of one successfully-loaded spec version.
+
+    A reload builds a complete new ``ToolSnapshot`` and swaps the registry's
+    single ``self._snapshot`` reference under ``self._lock``; ``list_tools()``
+    and ``call()`` read that reference exactly once per request, so a request
+    can never mix the tool map with a stale ``preferred_fields`` mapping (or
+    vice versa) from a previous version. Everything a request needs travels
+    together on one object.
+
+    ``spec_version`` is a monotonic counter incremented on every successful
+    reload whose *exposed* tool list actually changed (by content hash); a
+    touched-but-identical file and a failed reload both leave it untouched.
+    ``content_hash`` is a stable SHA-256 of the exposed tool list (the filtered
+    set clients see via ``list_tools()``), so a spec edit that only touches a
+    gated-off tool — leaving the exposed list unchanged — is not advertised as a
+    change. ``exposed_tools`` is that filtered list, precomputed at build time
+    so ``list_tools()`` is a single reference read.
+    """
+
+    tools: dict[str, ToolSpec]
+    preferred_fields: dict[str, list[str]]
+    session_tool_name: str
+    spec_version: int
+    content_hash: str
+    exposed_tools: list[dict[str, Any]]
 
 
 class SessionStore:
@@ -354,14 +389,24 @@ class ToolRegistry:
     The spec is the single source of truth: each entry declares a ``kind`` and a
     ``handler`` reference, and the registry resolves the handler by importlib
     (permitting only ``mcp_siebel.handlers`` modules). The file is hot-reloaded
-    by mtime — ``list_tools()`` stats the file and re-reads it only when it
-    changed, so edits go live on the next tools/list with no restart. Every
-    reload re-runs the full pipeline (parse with duplicate detection → deref →
-    validate → per-entry kind + executor resolution) and only swaps in the new
-    set on success; on any failure the last valid set keeps serving and the
-    failure is logged. If the very first load fails there is no last valid set,
-    so construction raises ``_SpecError`` (the process exits non-zero with a
-    clear error) rather than serving an unknown tool set.
+    by mtime — ``list_tools()``/``snapshot()`` stat the file and re-read it only
+    when it changed, so edits go live on the next tools/list with no restart (a
+    file watcher supplements this with a push notification; see ``watcher.py``).
+    Every reload re-runs the full pipeline (parse with duplicate detection →
+    deref → validate → per-entry kind + executor resolution) and, on success,
+    builds a fresh immutable ``ToolSnapshot`` and swaps the single
+    ``self._snapshot`` reference under ``self._lock``; ``list_tools()`` and
+    ``call()`` read that reference exactly once per request, so a request never
+    mixes data from two spec versions. On any failure the last valid snapshot
+    keeps serving and the failure is logged. If the very first load fails there
+    is no last valid set, so construction raises ``_SpecError`` (the process
+    exits non-zero with a clear error) rather than serving an unknown tool set.
+
+    A monotonic ``spec_version`` (and a content hash of the exposed tool list)
+    travel on the snapshot and are surfaced via ``health_status()``; both are
+    bumped only on a successful reload whose exposed list actually changed.
+    ``subscribe()`` registers a change-hook fired after such a reload — a
+    touched-but-identical file and a failed reload both fire nothing.
     """
 
     def __init__(self, settings: AppSettings) -> None:
@@ -369,14 +414,16 @@ class ToolRegistry:
         self._spec_path = _resolve_spec_path(settings)
         self._spec_mtime: float | None = None
         self._lock = threading.Lock()
-        self._tools: dict[str, ToolSpec] = {}
-        # The hot-reloaded preferred_fields mapping (BC name -> ordered field
-        # names); swapped in only on a successful reload so a broken file never
-        # replaces a good mapping. Surfaced to executors/handlers via ToolContext.
-        self._preferred_fields: dict[str, list[str]] = {}
-        # Name of the spec's establishes_session tool; set on each successful
-        # load. None only when no spec has loaded yet.
-        self._session_tool_name: str | None = None
+        # The single immutable view of the loaded spec. Swapped under
+        # ``self._lock`` by ``_reload_if_changed``; read exactly once per
+        # request by ``list_tools()``/``call()`` so a request never mixes data
+        # from two spec versions. None only before the first successful load
+        # (construction raises on a first-load failure, so a constructed
+        # registry always has a snapshot).
+        self._snapshot: ToolSnapshot | None = None
+        # Change-hook subscribers, notified after a successful reload whose
+        # exposed tool list actually changed. Guarded by ``self._lock``.
+        self._subscribers: list[Callable[[ToolSnapshot], None]] = []
         # True until the first successful load. A failure before then is fatal:
         # without a valid spec the set of tools is unknown, so construction
         # raises and the process exits non-zero with a clear error. After the
@@ -398,32 +445,50 @@ class ToolRegistry:
         """Name of the spec's single establishes_session tool — the one the
         transports call to create a session and whose session_id they inject.
         Set on every successful load; a successful load always has exactly one."""
-        assert self._session_tool_name is not None, "no tool spec loaded"
-        return self._session_tool_name
+        assert self._snapshot is not None, "no tool spec loaded"
+        return self._snapshot.session_tool_name
 
     @property
     def preferred_fields(self) -> dict[str, list[str]]:
         """The hot-reloaded ``preferred_fields`` mapping (BC name -> ordered
-        field names) from the spec. Empty when the spec declares no section."""
-        return self._preferred_fields
+        field names) from the current snapshot. Empty when the spec declares no
+        section. Read-only view for callers outside the registry; ``call()``
+        reads it off the snapshot directly."""
+        assert self._snapshot is not None, "no tool spec loaded"
+        return self._snapshot.preferred_fields
+
+    @property
+    def _tools(self) -> dict[str, ToolSpec]:
+        """Read-only view of the current snapshot's tool map (test/inspection
+        helper). The storage is the snapshot; this property exists so existing
+        callers that read ``registry._tools`` keep working against the single
+        source of truth."""
+        assert self._snapshot is not None, "no tool spec loaded"
+        return self._snapshot.tools
 
     def health_status(self) -> dict[str, Any]:
-        """Read-only snapshot for /health: how many tools are loaded and from
-        which spec file (path + mtime). Does not trigger a reload."""
+        """Read-only snapshot for /health: how many tools are loaded, from which
+        spec file (path + mtime), and the current ``spec_version`` / content
+        hash. Does not trigger a reload."""
+        snap = self._snapshot
         return {
-            "tools": len(self._tools),
+            "tools": len(snap.tools) if snap else 0,
             "spec_path": self._spec_path,
             "spec_mtime": self._spec_mtime,
+            "spec_version": snap.spec_version if snap else 0,
+            "content_hash": snap.content_hash if snap else "",
         }
 
-    def _load_valid_tools(self) -> tuple[dict[str, ToolSpec], dict[str, list[str]]]:
+    def _load_valid_tools(self) -> tuple[dict[str, ToolSpec], dict[str, list[str]], str]:
         """Read, parse, deref, validate, and resolve executors for the spec file.
-        Returns a fresh ``name → ToolSpec`` map and the loaded ``preferred_fields``
-        mapping on success; raises ``_SpecError`` on any failure so the caller can
-        keep the last valid set. Every entry must declare a known ``kind``; the
-        kind's validator checks its kind-specific options and the kind's assembler
-        binds the executor — a single bad entry rejects the whole reload so a
-        half-edited spec never partially replaces a good one."""
+        Returns a fresh ``name → ToolSpec`` map, the loaded ``preferred_fields``
+        mapping, and the session-tool name on success; raises ``_SpecError`` on
+        any failure so the caller can keep the last valid set. Every entry must
+        declare a known ``kind``; the kind's validator checks its kind-specific
+        options and the kind's assembler binds the executor — a single bad entry
+        rejects the whole reload so a half-edited spec never partially replaces a
+        good one. This method touches no instance state: the caller builds the
+        immutable snapshot from the return value under the lock."""
         try:
             with open(self._spec_path, encoding="utf-8") as fh:
                 data = json.loads(fh.read(), object_pairs_hook=_no_dup_pairs)
@@ -502,16 +567,39 @@ class ToolRegistry:
             raise _SpecError(f"establishes_session tool {session_name!r} must be always_enabled")
         if session_spec.access != "read":
             raise _SpecError(f"establishes_session tool {session_name!r} must be access 'read'")
-        self._session_tool_name = session_name
-        return built, preferred_fields
+        return built, preferred_fields, session_name
+
+    def _exposed_tools(self, built: dict[str, ToolSpec]) -> list[dict[str, Any]]:
+        """The filtered tool list clients see via ``list_tools()``: access-gated
+        and with SIEBEL_DISABLED_TOOLS applied (always_enabled tools exempt).
+        Computed at snapshot build time so ``list_tools()`` is a single
+        reference read and the content hash reflects exactly what is exposed."""
+        disabled = {name.lower() for name in self.settings.disabled_tools}
+        return [
+            {"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
+            for tool in built.values()
+            if self._access_enabled(tool)
+            and (tool.always_enabled or tool.name.lower() not in disabled)
+        ]
+
+    @staticmethod
+    def _content_hash(exposed: list[dict[str, Any]]) -> str:
+        """Stable SHA-256 of the exposed tool list (canonical JSON). Changes only
+        when a client-visible tool's name/description/input_schema changes — so a
+        spec edit that only touches a gated-off tool is not advertised as a change."""
+        return hashlib.sha256(json.dumps(exposed, sort_keys=True).encode("utf-8")).hexdigest()
 
     def _reload_if_changed(self) -> None:
         """Re-read the spec file if its mtime changed since the last load. On a
-        successful reload, swap in the new tool set. On a reload failure after
-        the first good load, keep the last valid set and log. On a failure
-        during the very first load, raise ``_SpecError`` so construction aborts
-        and the process exits non-zero with a clear error (which entry, which
-        rule) — without a valid spec the set of tools is unknown."""
+        successful reload, build a fresh immutable ``ToolSnapshot`` and swap the
+        single ``self._snapshot`` reference under the lock. On a reload failure
+        after the first good load, keep the last valid snapshot and log. On a
+        failure during the very first load, raise ``_SpecError`` so construction
+        aborts and the process exits non-zero with a clear error. After a
+        successful swap whose exposed tool list actually changed (by content
+        hash), change-hook subscribers are notified outside the lock — a
+        touched-but-identical file and a failed reload both notify nothing."""
+        changed_snapshot: ToolSnapshot | None = None
         with self._lock:
             try:
                 mtime = os.stat(self._spec_path).st_mtime_ns
@@ -525,7 +613,7 @@ class ToolRegistry:
                 return
 
             try:
-                built, preferred_fields = self._load_valid_tools()
+                built, preferred_fields, session_name = self._load_valid_tools()
             except _SpecError as exc:
                 # Record this mtime so a broken file isn't re-read on every list
                 # call; it'll be retried when the file changes again.
@@ -535,12 +623,82 @@ class ToolRegistry:
                 log.warning("Tool spec reload failed — keeping current tools (%s): %s", exc, self._spec_path)
                 return
 
-            self._tools = built
-            self._preferred_fields = preferred_fields
+            exposed = self._exposed_tools(built)
+            new_hash = self._content_hash(exposed)
+            prev = self._snapshot
+            # The snapshot is rebuilt on every successful reload so a
+            # preferred_fields-only change (which leaves the exposed tool list
+            # — and thus the hash — unchanged) still reaches handlers on their
+            # next call. The spec_version bump and the change-hook are gated on
+            # the exposed list actually changing; a touched-but-identical file
+            # and a preferred_fields-only edit bump neither and fire nothing.
+            content_changed = prev is None or prev.content_hash != new_hash
+            if prev is None:
+                new_version = 1
+            elif content_changed:
+                new_version = prev.spec_version + 1
+            else:
+                new_version = prev.spec_version
+            snapshot = ToolSnapshot(
+                tools=built,
+                preferred_fields=preferred_fields,
+                session_tool_name=session_name,
+                spec_version=new_version,
+                content_hash=new_hash,
+                exposed_tools=exposed,
+            )
+            self._snapshot = snapshot
             self._spec_mtime = mtime
             self._first_load = False
-            log.info("Loaded %d tool specs from %s", len(built), self._spec_path)
+            if content_changed:
+                changed_snapshot = snapshot
+            log.info("Loaded %d tool specs from %s (version %d)", len(built), self._spec_path, new_version)
             self._warn_disabled_always_enabled(built)
+
+        # Notify subscribers outside the lock so a slow callback can't block a
+        # list/call and the lock never re-enters via callback code.
+        if changed_snapshot is not None:
+            self._notify_subscribers(changed_snapshot)
+
+    def _notify_subscribers(self, snapshot: ToolSnapshot) -> None:
+        with self._lock:
+            subscribers = list(self._subscribers)
+        for callback in subscribers:
+            try:
+                callback(snapshot)
+            except Exception:  # noqa: BLE001 — a subscriber fault must not break others or the reload
+                log.exception("change-hook subscriber raised; continuing")
+
+    def reload(self) -> None:
+        """Public reload entry point (used by the file watcher). Idempotent:
+        stats the spec and rebuilds the snapshot only if its mtime changed.
+        Fires change-hook subscribers iff the exposed tool list changed."""
+        self._reload_if_changed()
+
+    def snapshot(self) -> ToolSnapshot:
+        """Return the current immutable snapshot, triggering a lazy mtime reload
+        first (the fallback path the watcher supplements). Transports read
+        ``spec_version`` / ``content_hash`` from this for ETag and SSE events."""
+        self._reload_if_changed()
+        assert self._snapshot is not None, "no tool spec loaded"
+        return self._snapshot
+
+    def subscribe(self, callback: Callable[[ToolSnapshot], None]) -> Callable[[], None]:
+        """Register a callback fired after a successful reload whose exposed tool
+        list actually changed (the new snapshot is passed). Returns an
+        unsubscribe function. Callbacks run synchronously on the reloading
+        thread; transports bridge to their event loop inside the callback."""
+
+        def _unsubscribe() -> None:
+            with self._lock:
+                try:
+                    self._subscribers.remove(callback)
+                except ValueError:
+                    pass
+
+        with self._lock:
+            self._subscribers.append(callback)
+        return _unsubscribe
 
     def _warn_disabled_always_enabled(self, built: dict[str, ToolSpec]) -> None:
         """Log a clear warning for every always-enabled tool that
@@ -572,16 +730,21 @@ class ToolRegistry:
 
     def list_tools(self) -> list[dict[str, Any]]:
         self._reload_if_changed()
-        disabled = {name.lower() for name in self.settings.disabled_tools}
-        return [
-            {"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
-            for tool in self._tools.values()
-            if self._access_enabled(tool)
-            and (tool.always_enabled or tool.name.lower() not in disabled)
-        ]
+        # Read the snapshot reference exactly once; the exposed list is
+        # precomputed on it, so the result is a consistent view of one version
+        # (never half v1 / half v2). A shallow copy keeps callers from mutating
+        # the cached list; element dicts are shared, as before.
+        snap = self._snapshot
+        assert snap is not None, "no tool spec loaded"
+        return list(snap.exposed_tools)
 
     async def call(self, name: str, arguments: dict[str, Any], session: SessionContext | None) -> dict[str, Any]:
-        tool = self._tools.get(name)
+        # Read the snapshot reference exactly once: the tool lookup and the
+        # preferred_fields / session_tool_name used below all come from the same
+        # version, so a concurrent reload can never split them.
+        snap = self._snapshot
+        assert snap is not None, "no tool spec loaded"
+        tool = snap.tools.get(name)
         if tool is None:
             return _error(f'Unknown tool "{name}".')
         # The access gate takes precedence: a write/delete/external tool is
@@ -599,7 +762,13 @@ class ToolRegistry:
         log.debug("Calling tool %s with args %s", name, list(arguments.keys()))
         try:
             result = await tool.handler(
-                arguments, ToolContext(settings=self.settings, session=session, preferred_fields=self._preferred_fields)
+                arguments,
+                ToolContext(
+                    settings=self.settings,
+                    session=session,
+                    preferred_fields=snap.preferred_fields,
+                    session_tool_name=snap.session_tool_name,
+                ),
             )
         except Exception as exc:  # noqa: BLE001 — convert any handler crash / SiebelError into a structured result
             return _error_result(exc, name)

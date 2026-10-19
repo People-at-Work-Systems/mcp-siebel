@@ -68,7 +68,11 @@ def _error_result(exc: Exception, tool_name: str = "") -> dict[str, Any]:
 def _require_auth(ctx: ToolContext) -> Any:
     if ctx.session and ctx.session.client and ctx.session.cache:
         return ctx.session
-    return _error("Not authenticated. Call the authenticate tool first.")
+    # The session-establishment tool's name comes from the spec (injected into
+    # ToolContext by ToolRegistry.call), so this framework helper holds no
+    # tool-name literal. Byte-identical to the old hard-coded message when the
+    # session tool is named "authenticate".
+    return _error(f"Not authenticated. Call the {ctx.session_tool_name} tool first.")
 
 
 async def _resolve_bo_bc(args: dict[str, Any], auth: Any) -> tuple[str | None, str]:
