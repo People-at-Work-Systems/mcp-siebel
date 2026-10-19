@@ -441,13 +441,10 @@
       "input_schema": {
         "properties": {
           "user_question": {
-            "description": "Natural-language question about Siebel query syntax.",
+            "description": "Natural-language question about Siebel query syntax (optional; ignored).",
             "type": "string"
           }
         },
-        "required": [
-          "user_question"
-        ],
         "type": "object"
       }
     },

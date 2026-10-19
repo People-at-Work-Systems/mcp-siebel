@@ -107,3 +107,36 @@ async def test_static_text_ignores_caller_args(tmp_path) -> None:
     reg = _reg(tmp_path, {"x": _static("fixed", props={"q": {"type": "string"}})})
     resp = await reg.call("x", {"q": "anything"}, AsyncMock())
     assert resp["content"][0]["text"] == "fixed"
+
+
+# --- bundled get_query_syntax: user_question is optional, args ignored -------
+
+
+def test_bundled_get_query_syntax_user_question_is_optional() -> None:
+    """``user_question`` used to be required but is ignored by static_text, so
+    the model no longer has to invent input. The property stays (optional); the
+    ``required`` array is gone."""
+    reg = ToolRegistry(AppSettings())
+    schema = reg._tools["get_query_syntax"].input_schema
+    assert "user_question" in schema["properties"]
+    assert "required" not in schema or "user_question" not in schema.get("required", [])
+
+
+@pytest.mark.asyncio
+async def test_bundled_get_query_syntax_works_with_no_args() -> None:
+    """get_query_syntax returns its text with no arguments at all — the model
+    need not pass a placeholder user_question."""
+    reg = ToolRegistry(AppSettings())
+    resp = await reg.call("get_query_syntax", {}, None)
+    assert resp.get("isError") is not True
+    assert "LIKE" in resp["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_bundled_get_query_syntax_ignores_user_question_value() -> None:
+    """static_text ignores the caller's arguments, so a user_question value
+    (when the model does pass one) has no effect on the returned text."""
+    reg = ToolRegistry(AppSettings())
+    no_arg = (await reg.call("get_query_syntax", {}, None))["content"][0]["text"]
+    with_arg = (await reg.call("get_query_syntax", {"user_question": "how do LIKE?"}, None))["content"][0]["text"]
+    assert no_arg == with_arg
