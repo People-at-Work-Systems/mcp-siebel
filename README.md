@@ -127,7 +127,8 @@ list. The essentials:
 | `SIEBEL_ALLOW_WRITE` | `false` | Enable the write tools (create/update/create-child/upload-attachment). Default off — read-only. |
 | `SIEBEL_ALLOW_DELETE` | `false` | Enable `delete_record`. Default off — read-only. |
 | `SIEBEL_ALLOW_EXTERNAL` | `false` | Enable external-service tools (`web_search` sends free text to Brave). Default off — customer data can't leave for an outside service without an explicit opt-in. |
-| `SIEBEL_TOOLS_SPEC_PATH` | *(unset → bundled)* | Override the tool-spec JSON file (see [docs/tool-specs.md](docs/tool-specs.md)). Hot-reloaded by mtime; first-load failure aborts startup. |
+| `SIEBEL_TOOLS_SPEC_PATH` | *(unset → bundled)* | Override the tool-spec JSON file (see [docs/tool-specs.md](docs/tool-specs.md)). The spec defines the complete tool set — kinds, access levels, handler references, `preferred_fields` — not just per-tool description/inputSchema. Hot-reloaded (watcher + mtime fallback); first-load failure aborts startup. |
+| `SIEBEL_TOOLS_SPEC_WATCH` | `true` | Start a file watcher that pushes spec changes to the registry as they happen (debounced ~300 ms; atomic temp-file + rename replaces detected). Set `false` to rely on the lazy mtime check on the next `tools/list` / `GET /tools`. Python handler modules are not watched — a code change needs a restart. |
 | `SIEBEL_DISABLED_TOOLS` | *(empty)* | Additional comma-separated tool names to disable on top of the three gates |
 | `SIEBEL_SYSTEM_PROMPT_PATH` | *(unset → bundled)* | Override the bundled Siebel system prompt |
 | `MCP_API_TOKEN` | *(unset → no auth)* | Bearer token guard on the HTTP server |
@@ -143,10 +144,17 @@ Discover the current tool set from the server itself (`list_tools` over stdio,
 or `GET /tools` on the HTTP server).
 
 > The tool set is defined by a JSON spec file — `mcp_siebel/specs/tool_specs.json`
-> by default, overridable with `SIEBEL_TOOLS_SPEC_PATH`. See
-> [docs/tool-specs.md](docs/tool-specs.md) for the file format, every tool kind,
-> access levels, bind/`allowed_fields`/`searchspec_template`, and how to add a
-> tool (JSON-only or via a `python` handler).
+> by default, overridable with `SIEBEL_TOOLS_SPEC_PATH`. The spec defines the
+> complete tool set (kinds, access levels, handler references, `preferred_fields`),
+> not just per-tool description/inputSchema. A spec edit is hot-reloaded: a
+> `watchfiles` watcher (`SIEBEL_TOOLS_SPEC_WATCH`, default on) pushes the change
+> to connected clients — MCP clients get `notifications/tools/list_changed` (a
+> hint; not every client re-lists immediately), and HTTP REST clients get an
+> `ETag`/`If-None-Match`→304 on `GET /tools` and a `tools_changed` SSE event on
+> `GET /tools/events`. A failed reload sends nothing and keeps the last valid set.
+> See [docs/tool-specs.md](docs/tool-specs.md) for the file format, every tool
+> kind, access levels, bind/`allowed_fields`/`searchspec_template`, how to add a
+> tool (JSON-only or via a `python` handler), and the full hot-reload semantics.
 
 ## Development
 

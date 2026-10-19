@@ -3,10 +3,12 @@
 mcp-siebel's tool set is defined by a JSON spec file —
 [`src/mcp_siebel/specs/tool_specs.json`](../src/mcp_siebel/specs/tool_specs.json)
 by default — not by code. The registry reads it at startup, resolves a generic
-executor per tool from the entry's `kind`, and hot-reloads it by mtime. This
-document is the reference for authoring and overriding that file: the file
-format, every kind, the access gates, `bind` / `allowed_fields` /
-`searchspec_template`, how to add a tool, and the hot-reload semantics.
+executor per tool from the entry's `kind`, and hot-reloads it when it changes
+(a `watchfiles` file watcher plus a lazy mtime fallback — see
+[Hot-reload](#hot-reload)). This document is the reference for authoring and
+overriding that file: the file format, every kind, the access gates, `bind` /
+`allowed_fields` / `searchspec_template`, how to add a tool, and the
+hot-reload semantics.
 
 A JSON Schema for the file lives at
 [`src/mcp_siebel/specs/tool_specs.schema.json`](../src/mcp_siebel/specs/tool_specs.schema.json);
@@ -447,24 +449,59 @@ dependency. This invariant is pinned by
 
 ## Hot-reload
 
-The registry stats the spec file on every `list_tools` call and re-reads it only
-when its mtime changed. Every reload re-runs the full pipeline (parse with
-duplicate-key detection → deref `$ref` → validate → per-entry kind + executor +
-access/session-rule resolution) and only swaps in the new set on success.
+A spec edit reaches connected clients promptly, without restarting the server.
+Two mechanisms cooperate: a **file watcher** (the prompt path) and the
+**lazy mtime check** (the fallback).
+
+The watcher (`watchfiles`, started by both transports alongside their MCP
+server) watches the spec file's *directory* and filters events to the spec
+path — so an editor's atomic temp-file + rename replace is detected, not just
+in-place writes. Bursts are debounced (~300 ms): several saves in quick
+succession collapse into one reload. On a quiet change it calls
+`registry.reload()`. The lazy mtime check in `list_tools()`/`snapshot()` stays
+as a fallback: a missed watcher event still heals on the next `tools/list`
+(stdio), `GET /tools` (HTTP), or any tool call — that call stats the file and
+reloads if its mtime changed. `SIEBEL_TOOLS_SPEC_WATCH=false` disables the
+watcher; the lazy fallback still applies either way.
+
+Every reload re-runs the full pipeline (parse with duplicate-key detection →
+deref `$ref` → validate → per-entry kind + executor + access/session-rule
+resolution) and, on success, builds a fresh immutable **snapshot** and swaps
+the single registry reference under its lock. `list_tools()` and `call()` read
+that reference exactly once per request, so a request never mixes data from two
+spec versions. The snapshot carries a monotonic `spec_version` and a SHA-256
+`content_hash` of the *exposed* tool list (the filtered set clients see);
+`/health` reports both.
 
 - **What is reloaded:** the tool entries and the `preferred_fields` mapping
-  (both served from the last successful load).
+  (both rebuilt on every successful reload, so a `preferred_fields`-only edit
+  reaches handlers on their next call even though it leaves the exposed tool
+  list unchanged).
 - **Fail-fast vs keep-last-valid:** a failure on the very first load (no last
   valid set) aborts startup — the process exits non-zero with a clear error
   naming the offending entry and rule. A failure on a later reload is non-fatal:
-  the last valid set keeps serving and the failure is logged. A broken file is
-  not re-read on every call (its mtime is recorded) — it is retried when the
-  file changes again.
-- **Connected clients:** the server does **not** push
-  `notifications/tools/list_changed`; it has no file watcher. A spec edit goes
-  live on the next `tools/list` (stdio) or `GET /tools` (HTTP) the client issues
-  — that call triggers the mtime check. A client that never re-requests the tool
-  list sees the change only after reconnecting.
+  the last valid snapshot keeps serving and the failure is logged. A broken
+  file is not re-read on every call (its mtime is recorded) — it is retried when
+  the file changes again. **A failed reload sends no notification and bumps no
+  `spec_version`** — clients are not told the list changed, because it didn't.
+- **What clients receive:** only a successful reload whose *exposed* tool list
+  actually changed (by content hash) is advertised:
+  - **MCP clients (stdio and the HTTP `/sse` SSE transport):** the server
+    declares `tools.listChanged = true` in its capabilities and sends
+    `notifications/tools/list_changed` to every active session. Note this is a
+    **hint**: not every MCP client acts on it. Some re-list immediately; others
+    re-list lazily on their next turn or only when the user starts a new
+    conversation. A client that never re-requests the tool list sees the change
+    only after reconnecting.
+  - **HTTP REST clients:** `GET /tools` returns `spec_version` as an `ETag`
+    (send `If-None-Match` to get a `304 Not Modified` when the list is
+    unchanged), and `GET /tools/events` is an SSE stream that emits a
+    `tools_changed` event with the new `spec_version` (plus a periodic
+    keepalive). Both have the same auth as `GET /tools`. A dead SSE client is
+    dropped and does not affect the others.
+- **Code is not hot-reloaded:** only the JSON spec is watched. Python handler
+  modules are imported once; a code change (or a brand-new handler module — the
+  resolver imports it by name) requires a restart.
 
 ## Worked example: a customer-specific bound tool
 
