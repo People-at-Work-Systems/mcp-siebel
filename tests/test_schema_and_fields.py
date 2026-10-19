@@ -25,8 +25,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from mcp_siebel.common import _validate_fields_arg
 from mcp_siebel.config import AppSettings
-from mcp_siebel.handlers._common import _validate_fields_arg
 from mcp_siebel.siebel_client import (
     SiebelBCDescriptor,
     SiebelError,

@@ -1,9 +1,19 @@
-"""Shared helpers for the tool handlers.
+"""Shared tool-result and auth helpers used across the framework.
 
-The domain handler modules (``auth``, ``metadata``, ``records``, ``children``,
-``util``) build their results and gate on auth through these. Nothing here is
-tool-specific — no tool names, no per-tool branching — so it stays out of
-``tools.py``, which only owns the registry and the handler resolver.
+These small helpers build the MCP tool-result dicts (``_text`` / ``_json_text``
+/ ``_error`` / ``_error_result``), gate on an established session
+(``_require_auth``), resolve a Business Object/Component name
+(``_resolve_bo_bc``), shape query results (``_result_dict`` / ``_empty_result``),
+format records (``_format_record`` / ``_format_hierarchical_record``), and
+validate the ``fields`` argument (``_validate_fields_arg``). Nothing here is
+tool-specific — no tool names, no per-tool branching.
+
+This module is the framework-level home for these helpers. The generic
+executors (``executors/``), the renderers (``renderers.py``), the registry
+(``tools.py``) and the ``python``-kind handler modules (``handlers/``) all
+import from here, so framework code never reaches into ``mcp_siebel.handlers``
+for a shared helper. The layering invariant (framework must not import from
+handlers) is pinned by ``tests/test_framework_no_handler_imports.py``.
 """
 
 from __future__ import annotations
@@ -12,15 +22,15 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from ..siebel_client import SiebelError, SiebelRecord
+from .siebel_client import SiebelError, SiebelRecord
 
 if TYPE_CHECKING:
-    # Framework types are referenced only in annotations; importing them at
-    # runtime would create a cycle (tools.py imports this module for
-    # _error_result). ``from __future__ import annotations`` keeps the names
-    # unevaluated, so a TYPE_CHECKING-only import satisfies type checkers
-    # without pulling tools.py at runtime.
-    from ..tools import ToolContext
+    # Framework type referenced only in annotations; importing it at runtime
+    # would create a cycle (tools.py imports this module for _error_result).
+    # ``from __future__ import annotations`` keeps the name unevaluated, so a
+    # TYPE_CHECKING-only import satisfies type checkers without pulling tools.py
+    # at runtime.
+    from .tools import ToolContext
 
 log = logging.getLogger("mcp-siebel")
 
@@ -109,7 +119,7 @@ def _format_hierarchical_record(record: SiebelRecord) -> str:
 # Tokens the LLM emits as placeholders when it doesn't know a real value.
 # Rejecting them up front (instead of forwarding to Siebel) avoids the
 # SBL-EAI-50258 "Invalid fields: '<?>'" round-trip and the broken-default
-# retry that follows (see records._query). Compared case-insensitively.
+# retry that follows (see the bc_read executor). Compared case-insensitively.
 _PLACEHOLDER_FIELD_TOKENS = {
     "<?>",
     "?",

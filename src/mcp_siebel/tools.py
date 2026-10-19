@@ -35,15 +35,15 @@ from dataclasses import dataclass, field
 from importlib.resources import files
 from typing import TYPE_CHECKING, Any
 
+from .common import _error, _error_result
 from .config import AppSettings
-from .handlers._common import _error, _error_result
 from .kinds import _COMMON_FIELDS, _KindSpec, _SpecError
 
 if TYPE_CHECKING:
     # Annotation-only (stringified via ``from __future__ import annotations``):
     # importing them at runtime would work but isn't needed here, and keeping
     # them out of the runtime import graph leaves tools.py dependent only on
-    # the handlers._common helpers it actually calls.
+    # the common helpers it actually calls.
     from .schema_cache import SchemaCache
     from .siebel_client import SiebelClient
 

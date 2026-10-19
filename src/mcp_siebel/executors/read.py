@@ -9,7 +9,7 @@ parameterised by the spec entry's options (``mode``, ``render``, optional
 ``fallback`` and ``bind``). Argument names are derived from the previous handlers
 and from ``siebel_client.py`` — the external tool interface is unchanged.
 
-The ``curated_query`` fallback reuses ``handlers.records._record_via_query`` so the
+The ``curated_query`` fallback reuses ``executors._fallback._record_via_query`` so the
 field-curation ranking (``_rank_fallback_fields``) and the curated
 ``preferred_fields`` intersection stay in one place; the mapping is read from
 ``ctx.preferred_fields`` (hot-reloaded from the spec). The prose formatting lives
@@ -26,11 +26,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from ..handlers._common import _error, _require_auth, _resolve_bo_bc, _text, _validate_fields_arg
-from ..handlers.records import _record_via_query
+from ..common import _error, _require_auth, _resolve_bo_bc, _text, _validate_fields_arg
 from ..kinds import _COMMON_FIELDS, _KindSpec, _SpecError
 from ..renderers import RENDERERS, validate_render
 from ..siebel_client import SiebelError
+from ._fallback import _record_via_query
 from ._validation import validate_bind_and_required
 
 if TYPE_CHECKING:

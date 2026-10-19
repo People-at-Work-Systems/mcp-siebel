@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ..handlers._common import _text
+from ..common import _text
 from ..kinds import _COMMON_FIELDS, _KindSpec, _SpecError
 
 if TYPE_CHECKING:

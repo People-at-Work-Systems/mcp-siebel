@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ._common import _json_text, _require_auth
+from ..common import _json_text, _require_auth
 
 if TYPE_CHECKING:
     from ..tools import ToolContext

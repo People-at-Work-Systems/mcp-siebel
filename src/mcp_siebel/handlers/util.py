@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from ._common import _error, _text
+from ..common import _error, _text
 
 if TYPE_CHECKING:
     from ..tools import ToolContext

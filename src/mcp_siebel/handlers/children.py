@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ._common import (
+from ..common import (
     _error,
     _require_auth,
     _resolve_bo_bc,

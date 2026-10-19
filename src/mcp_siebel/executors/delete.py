@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ..handlers._common import _require_auth, _resolve_bo_bc, _text
+from ..common import _require_auth, _resolve_bo_bc, _text
 from ..kinds import _COMMON_FIELDS, _KindSpec, _SpecError
 from ..renderers import RENDERERS, validate_render
 from ._validation import validate_bind_and_required

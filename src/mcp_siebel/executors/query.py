@@ -19,7 +19,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
-from ..handlers._common import (
+from ..common import (
     _empty_result,
     _error,
     _error_result,

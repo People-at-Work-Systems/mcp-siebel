@@ -68,6 +68,13 @@ def _query_result(record: dict[str, str]) -> SiebelQueryResult:
     )
 
 
+def _empty_query_result() -> SiebelQueryResult:
+    """A scoped-query result that matched no items — the fallback gives up."""
+    return SiebelQueryResult(
+        items=[], total_count=0, has_more=False, next_start_row=None, offset=0, page_size=1
+    )
+
+
 # --- get_record: direct read success ---------------------------------------
 
 
@@ -219,6 +226,30 @@ async def test_get_record_fallback_failure_surfaces_masked_error() -> None:
     )
     assert resp.get("isError") is True
     assert resp["content"][0]["text"] == _MASKED
+
+
+@pytest.mark.asyncio
+async def test_get_record_fallback_query_no_items_surfaces_masked_error() -> None:
+    """Today's behavior: when the direct read fails (SiebelError) and the
+    curated_query fallback's scoped query matches no items (describe_bc
+    succeeds, query returns an empty item list), the fallback returns None and
+    the executor re-raises the ORIGINAL direct-read error — so the registry
+    masks it for the caller. The empty fallback query is not reported as 'No
+    record found.', because the direct read already failed with an error and
+    that error is what propagates."""
+    client = _client()
+    client.get_record = AsyncMock(side_effect=_BROKEN_FIELD_ERROR)
+    client.describe_bc = AsyncMock(return_value=_descriptor("Last Name", "Id"))
+    client.query = AsyncMock(return_value=_empty_query_result())
+    reg = ToolRegistry(AppSettings())
+    resp = await reg.call(
+        "get_record", {"business_object": "Contact", "id": "7SIA-5TYFM"}, _session(client, resolve="Contact")
+    )
+    assert resp.get("isError") is True
+    assert resp["content"][0]["text"] == _MASKED
+    # The fallback actually ran (describe + scoped query), then gave up.
+    client.describe_bc.assert_awaited_once()
+    client.query.assert_awaited_once()
 
 
 # --- get_record: BO not found / unauthenticated ---------------------------

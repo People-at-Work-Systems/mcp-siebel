@@ -8,7 +8,7 @@ from the wrong *family* for its kind — is rejected at spec load time (see
 
 Each renderer declares a **family** naming the shape of dict it consumes:
 ``query`` and ``count`` take the paginated query-result dict
-(``_common._result_dict`` / ``_empty_result``); ``upsert`` and ``delete`` take
+(``common._result_dict`` / ``_empty_result``); ``upsert`` and ``delete`` take
 an upsert/delete context dict (resolved BO/BC, record, id/parent_id). A kind
 accepts only the families that match its result shape, so a bc_query tool can't
 accidentally use an upsert renderer (which would KeyError at runtime). The
@@ -24,7 +24,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from .handlers._common import _format_hierarchical_record, _format_record, _json_text, _text
+from .common import _format_hierarchical_record, _format_record, _json_text, _text
 from .kinds import _SpecError
 
 Renderer = Callable[[dict[str, Any]], dict[str, Any]]

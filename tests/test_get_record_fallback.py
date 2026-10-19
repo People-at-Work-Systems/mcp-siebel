@@ -8,13 +8,13 @@ What stays here are the direct unit tests of the ranking heuristic — the
 can only exercise through the fixed ``_MAX_FALLBACK_FIELDS`` cap.
 
 ``_rank_fallback_fields`` and its hint tuples live in
-``mcp_siebel.handlers.records``; the curated per-BC field lists moved to the
+``mcp_siebel.executors._fallback``; the curated per-BC field lists moved to the
 spec's top-level ``preferred_fields`` section.
 """
 
 from __future__ import annotations
 
-from mcp_siebel.handlers.records import _rank_fallback_fields
+from mcp_siebel.executors._fallback import _rank_fallback_fields
 
 # The fallback first shipped taking the first N fields in descriptor order.
 # Siebel describes alphabetically, so Contact yielded Accomplishments, Account

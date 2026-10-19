@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
+from mcp_siebel.common import _error_result
 from mcp_siebel.config import AppSettings
-from mcp_siebel.handlers._common import _error_result
 from mcp_siebel.siebel_client import SiebelError
 from mcp_siebel.tools import SessionContext, ToolRegistry, ToolSpec
 

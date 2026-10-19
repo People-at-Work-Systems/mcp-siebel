@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from ..common import _error, _text
 from ..config import AppSettings
 from ..schema_cache import SchemaCache
 from ..siebel_client import SiebelClient, SiebelError
-from ._common import _error, _text
 
 if TYPE_CHECKING:
     from ..tools import ToolContext
@@ -68,69 +68,6 @@ async def _authenticate(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any
     session.client = client
     session.cache = SchemaCache(client)
     return _text(f"Authenticated as {username}. You can now use all Siebel tools.")
-
-
-async def _authenticated_client(settings: AppSettings, username: str, password: str) -> SiebelClient | None:
-    """Return a ready-to-use SiebelClient for standalone mode.
-
-    Tries token auth (POST /auth) first — required by Siebel 26.x instances that
-    don't accept raw Basic Auth on data endpoints. Falls back to Basic Auth for
-    older or differently-configured instances. Returns None if credentials are
-    invalid (401/403).
-    """
-    # Attempt 1: token auth
-    token_client = SiebelClient(
-        base_url=settings.base_url,
-        auth_mode="token",
-        username=username,
-        password=password,
-        page_size=settings.default_page_size,
-        request_timeout_ms=settings.request_timeout_ms,
-        max_concurrent_requests=settings.max_concurrent_requests,
-    )
-    try:
-        await token_client.login()
-        log.info("Siebel authentication succeeded via token auth")
-        return token_client
-    except SiebelError as exc:
-        if exc.status_code in {401, 403}:
-            return None  # Bad credentials — no point trying basic
-        log.info(
-            "Token auth endpoint returned HTTP %s — falling back to Basic Auth",
-            exc.status_code,
-        )
-
-    # Attempt 2: basic auth — validate with a lightweight probe
-    basic_client = _basic_client(settings, username, password)
-    try:
-        await basic_client.list_business_objects()
-        basic_client.page_size = settings.default_page_size
-        log.info("Siebel authentication succeeded via Basic Auth")
-        return basic_client
-    except SiebelError as exc:
-        if exc.status_code in {401, 403}:
-            return None
-        # 500 / other — Siebel may restrict the catalogue endpoint but credentials
-        # could still be valid; proceed and let the real tool call surface any error.
-        log.warning(
-            "Basic Auth probe returned HTTP %s — proceeding anyway: %s",
-            exc.status_code,
-            exc.response_body[:200] if exc.response_body else "",
-        )
-        basic_client.page_size = settings.default_page_size
-        return basic_client
-
-
-def _basic_client(settings: AppSettings, username: str, password: str) -> SiebelClient:
-    return SiebelClient(
-        base_url=settings.base_url,
-        auth_mode="basic",
-        username=username,
-        password=password,
-        page_size=1,
-        request_timeout_ms=settings.request_timeout_ms,
-        max_concurrent_requests=settings.max_concurrent_requests,
-    )
 
 
 def _sso_client(settings: AppSettings, username: str) -> SiebelClient:
