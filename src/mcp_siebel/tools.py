@@ -449,6 +449,12 @@ class ToolRegistry:
         return self._snapshot.session_tool_name
 
     @property
+    def spec_path(self) -> str:
+        """The resolved spec file path the registry loads from (override or
+        bundled). Read-only — used by the watcher and surfaced in /health."""
+        return self._spec_path
+
+    @property
     def preferred_fields(self) -> dict[str, list[str]]:
         """The hot-reloaded ``preferred_fields`` mapping (BC name -> ordered
         field names) from the current snapshot. Empty when the spec declares no

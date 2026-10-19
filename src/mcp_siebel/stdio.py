@@ -41,10 +41,12 @@ from mcp.types import (
 
 from .config import load_settings
 from .tools import SessionStore, ToolRegistry
+from .watcher import ToolSpecWatcher
 
 settings = load_settings()
 sessions = SessionStore(settings.session_timeout_ms / 1000)
 registry = ToolRegistry(settings)
+watcher = ToolSpecWatcher(registry, settings)
 
 _session_tool = registry.session_tool_name
 _AUTH_INSTRUCTIONS = f"""\
@@ -144,8 +146,14 @@ _mcp = Server(
 
 
 async def _run() -> None:
-    async with stdio_server() as (read_stream, write_stream):
-        await _mcp.run(read_stream, write_stream, _mcp.create_initialization_options())
+    # Start the spec watcher on the server's loop; it reloads the registry when
+    # the spec file changes and is cancelled cleanly on shutdown (no task leak).
+    watcher.start()
+    try:
+        async with stdio_server() as (read_stream, write_stream):
+            await _mcp.run(read_stream, write_stream, _mcp.create_initialization_options())
+    finally:
+        await watcher.stop()
 
 
 def main() -> None:

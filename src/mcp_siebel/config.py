@@ -81,6 +81,16 @@ class AppSettings(BaseSettings):
     # tools/list with no restart. Mirrors SIEBEL_SYSTEM_PROMPT_PATH.
     tools_spec_path: str = Field(default="", alias="SIEBEL_TOOLS_SPEC_PATH")
 
+    # Whether to start a watchfiles file watcher that pushes spec changes to the
+    # registry as they happen (instead of waiting for the next tools/list). The
+    # watcher watches the spec file's directory and filters to the spec path, so
+    # an editor's atomic temp-file + rename replace is detected; bursts are
+    # debounced (~300 ms). Default true; set false to disable. The lazy mtime
+    # check in list_tools() stays as a fallback either way. Python handler
+    # modules are NOT watched — a code change still needs a restart; only the
+    # JSON spec is hot-reloaded.
+    tools_spec_watch: bool = Field(default=True, alias="SIEBEL_TOOLS_SPEC_WATCH")
+
     @property
     def disabled_tools(self) -> list[str]:
         """The explicit SIEBEL_DISABLED_TOOLS list only.

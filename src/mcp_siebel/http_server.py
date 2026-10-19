@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -59,6 +60,7 @@ from starlette.requests import Request
 from .config import load_settings
 from .context import CorrelationMiddleware, session_id_var, turn_id_var
 from .tools import SessionStore, ToolRegistry
+from .watcher import ToolSpecWatcher
 
 
 class _AccessLogFilter(logging.Filter):
@@ -114,6 +116,8 @@ _use_json_logging("mcp-siebel")
 settings = load_settings()
 sessions = SessionStore(settings.session_timeout_ms / 1000)
 registry = ToolRegistry(settings)
+# Spec watcher: started on app startup, stopped on shutdown (see _lifespan).
+watcher = ToolSpecWatcher(registry, settings)
 started_at = time.monotonic()
 
 
@@ -159,10 +163,23 @@ _mcp = Server("siebel-crm", on_list_tools=_list_tools, on_call_tool=_call_tool)
 # FastAPI app
 # ---------------------------------------------------------------------------
 
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Start the spec watcher on the server's loop; stop it cleanly on shutdown
+    # so no asyncio task leaks (and tests see no dangling-task warnings).
+    watcher.start()
+    try:
+        yield
+    finally:
+        await watcher.stop()
+
+
 app = FastAPI(
     title="MCP Siebel",
     description="MCP-style tool server for Oracle Siebel 26.2+",
     version="0.1.0",
+    lifespan=_lifespan,
 )
 
 Instrumentator().instrument(app).expose(app)
