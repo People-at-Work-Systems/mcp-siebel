@@ -1,4 +1,5 @@
 {
+  "$schema": "./tool_specs.schema.json",
   "$defs": {
     "business_component": {
       "description": "Business Component within the Business Object. Defaults to the Business Object name itself when omitted.",
@@ -112,6 +113,8 @@
   "tools": {
     "aggregate_data": {
       "description": "Compute sum, avg, min, max, or count across all matching records.",
+      "kind": "python",
+      "access": "read",
       "handler": "mcp_siebel.handlers.records:_aggregate_data",
       "input_schema": {
         "properties": {
@@ -139,14 +142,14 @@
           "operation"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "read"
+      }
     },
     "authenticate": {
+      "description": "Authenticate or register a Siebel user for this session.",
+      "kind": "python",
+      "access": "read",
       "always_enabled": true,
       "establishes_session": true,
-      "description": "Authenticate or register a Siebel user for this session.",
       "handler": "mcp_siebel.handlers.auth:_authenticate",
       "input_schema": {
         "properties": {
@@ -164,12 +167,12 @@
           "password"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "read"
+      }
     },
     "calculate_date": {
       "description": "Resolve a natural-language date expression to MM/DD/YYYY.",
+      "kind": "python",
+      "access": "read",
       "handler": "mcp_siebel.handlers.util:_calculate_date",
       "input_schema": {
         "properties": {
@@ -182,12 +185,15 @@
           "expression"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "read"
+      }
     },
     "count_records": {
       "description": "Count records matching an optional searchspec.",
+      "kind": "bc_query",
+      "access": "read",
+      "render": "count_prose",
+      "result": "count",
+      "scope": "root",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -204,20 +210,15 @@
           "business_object"
         ],
         "type": "object"
-      },
-      "kind": "bc_query",
-      "access": "read",
-      "scope": "root",
-      "result": "count",
-      "render": "count_prose"
+      }
     },
     "create_child_record": {
       "description": "Create child record(s) under a parent record.",
       "kind": "bc_upsert",
       "access": "write",
       "operation": "create",
-      "scope": "child",
       "render": "child_create_prose",
+      "scope": "child",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -250,8 +251,8 @@
       "kind": "bc_upsert",
       "access": "write",
       "operation": "create",
-      "scope": "root",
       "render": "create_prose",
+      "scope": "root",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -276,8 +277,8 @@
       "kind": "bc_upsert",
       "access": "write",
       "operation": "create",
-      "scope": "root",
       "render": "create_json",
+      "scope": "root",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -325,8 +326,8 @@
       "description": "Get field schema for a Siebel Business Object/Component.",
       "kind": "bc_describe",
       "access": "read",
-      "source": "bc_descriptor",
       "render": "describe_bc_prose",
+      "source": "bc_descriptor",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -346,8 +347,8 @@
       "description": "REST data API field list for a BC as JSON \u2014 the navigator's result-list columns (reliable; no LOV types).",
       "kind": "bc_describe",
       "access": "read",
-      "source": "bc_descriptor",
       "render": "describe_bc_json",
+      "source": "bc_descriptor",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -367,8 +368,8 @@
       "description": "Query Siebel repository metadata for the full field list of a Business Component. Returns richer data than describe_business_object: pre/post default values, LOV picklist types, calculated field flags, join info, and fields that are valid in searchspec/sort_spec but not returned by the REST data API. Always call this when you need fields not listed by describe_business_object, before create/update to check required field defaults, or when unsure about a field name or picklist values.",
       "kind": "bc_describe",
       "access": "read",
-      "source": "repository",
       "render": "repository_prose",
+      "source": "repository",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -388,8 +389,8 @@
       "description": "Field metadata for a BC as JSON (name, type, LOV type, flags) \u2014 for the navigator's filter chips.",
       "kind": "bc_describe",
       "access": "read",
-      "source": "repository",
       "render": "repository_json",
+      "source": "repository",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -407,6 +408,8 @@
     },
     "get_list_of_values": {
       "description": "Fetch Siebel List of Values for LOV type codes.",
+      "kind": "python",
+      "access": "read",
       "handler": "mcp_siebel.handlers.metadata:_get_list_of_values",
       "input_schema": {
         "properties": {
@@ -422,9 +425,7 @@
           "lov_types"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "read"
+      }
     },
     "get_query_syntax": {
       "description": "Return Siebel Query Language syntax reference.",
@@ -452,9 +453,9 @@
       "description": "Get a single Siebel record by Id.",
       "kind": "bc_read",
       "access": "read",
+      "fallback": "curated_query",
       "mode": "single",
       "render": "record_prose",
-      "fallback": "curated_query",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -506,8 +507,8 @@
       "description": "List all available Siebel Business Objects.",
       "kind": "bc_describe",
       "access": "read",
-      "source": "business_objects",
       "render": "list_prose",
+      "source": "business_objects",
       "input_schema": {
         "properties": {},
         "type": "object"
@@ -517,8 +518,8 @@
       "description": "List all available Siebel Business Objects as structured JSON (for the CRM navigator).",
       "kind": "bc_describe",
       "access": "read",
-      "source": "business_objects",
       "render": "list_json",
+      "source": "business_objects",
       "input_schema": {
         "properties": {},
         "type": "object"
@@ -526,6 +527,11 @@
     },
     "query_child_records": {
       "description": "Query child records under a parent record.",
+      "kind": "bc_query",
+      "access": "read",
+      "render": "child_query_prose",
+      "result": "records",
+      "scope": "child",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -562,15 +568,15 @@
           "child_business_component"
         ],
         "type": "object"
-      },
-      "kind": "bc_query",
-      "access": "read",
-      "scope": "child",
-      "result": "records",
-      "render": "child_query_prose"
+      }
     },
     "query_child_records_json": {
       "description": "Query child records and return structured JSON.",
+      "kind": "bc_query",
+      "access": "read",
+      "render": "query_json",
+      "result": "records",
+      "scope": "child",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -607,15 +613,15 @@
           "child_business_component"
         ],
         "type": "object"
-      },
-      "kind": "bc_query",
-      "access": "read",
-      "scope": "child",
-      "result": "records",
-      "render": "query_json"
+      }
     },
     "query_data": {
       "description": "Query Siebel CRM data using a Siebel searchspec expression.",
+      "kind": "bc_query",
+      "access": "read",
+      "render": "query_prose",
+      "result": "records",
+      "scope": "root",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -644,15 +650,15 @@
           "business_object"
         ],
         "type": "object"
-      },
-      "kind": "bc_query",
-      "access": "read",
-      "scope": "root",
-      "result": "records",
-      "render": "query_prose"
+      }
     },
     "query_records_json": {
       "description": "Query records and return structured JSON.",
+      "kind": "bc_query",
+      "access": "read",
+      "render": "query_json",
+      "result": "records",
+      "scope": "root",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -688,20 +694,15 @@
           "business_object"
         ],
         "type": "object"
-      },
-      "kind": "bc_query",
-      "access": "read",
-      "scope": "root",
-      "result": "records",
-      "render": "query_json"
+      }
     },
     "update_record": {
       "description": "Update an existing Siebel record by Id.",
       "kind": "bc_upsert",
       "access": "write",
       "operation": "update",
-      "scope": "root",
       "render": "update_prose",
+      "scope": "root",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -727,6 +728,8 @@
     },
     "upload_attachment": {
       "description": "Upload a base64 file attachment to a Siebel record.",
+      "kind": "python",
+      "access": "write",
       "handler": "mcp_siebel.handlers.children:_upload_attachment",
       "input_schema": {
         "properties": {
@@ -769,12 +772,12 @@
           "file_content_base64"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "write"
+      }
     },
     "web_search": {
       "description": "Search the web using Brave Search when configured.",
+      "kind": "python",
+      "access": "external",
       "handler": "mcp_siebel.handlers.util:_web_search",
       "input_schema": {
         "properties": {
@@ -791,9 +794,7 @@
           "query"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "external"
+      }
     }
   }
 }

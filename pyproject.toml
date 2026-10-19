@@ -39,6 +39,7 @@ dev = [
     "ruff",
     "mypy",
     "build",
+    "jsonschema>=4",  # the spec-schema consistency test validates tool_specs.json against tool_specs.schema.json
     "mcp-siebel[http]",  # the test suite exercises http_server, so dev pulls the http extra
 ]
 
