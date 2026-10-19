@@ -43,9 +43,12 @@ _FALLBACKS = {"curated_query"}
 _BC_READ_ALLOWED_OPTIONS = frozenset({"mode", "render", "fallback", "bind"})
 _BC_READ_REQUIRED_OPTIONS = frozenset({"mode", "render"})
 # Parameters execute_bc_read actually reads from the effective args (the bind
-# values merged with the caller's input). A bind key outside this set is a typo
-# that would silently do nothing, so it is rejected at load time.
+# values merged with the caller's input). A bind key outside the mode's set is a
+# typo (or a key that would silently do nothing for that mode), rejected at load.
+# ``fields`` is read only in mode "single"; binding it for "with_children" would
+# be silently dropped, so it is not a known key for that mode.
 _BC_READ_BIND_KEYS = frozenset({"business_object", "business_component", "id", "fields"})
+_BC_READ_BIND_KEYS_WITHOUT_FIELDS = frozenset({"business_object", "business_component", "id"})
 # Per-kind bind value types: BO/BC/id are str; fields is a list of field names.
 _BC_READ_BIND_TYPES: dict[str, str] = {
     "business_object": "str",
@@ -73,7 +76,12 @@ def _validate_bc_read(entry: dict[str, Any], name: str, schema: dict[str, Any]) 
         raise _SpecError(
             f"bc_read entry {name!r} has invalid mode {mode!r} (expected 'single' or 'with_children')"
         )
-    validate_render(kind="bc_read", name=name, render=entry.get("render"), accepted_families={"record"})
+    # Per-mode render family: mode "single" takes the flat record renderers,
+    # "with_children" the hierarchical ones (which strip the client's __-prefixed
+    # child-availability keys). Pairing the wrong family would emit __-keys as
+    # prose, so the wrong family is rejected at load time.
+    accepted_render_families = {"record"} if mode == "single" else {"hierarchical_record"}
+    validate_render(kind="bc_read", name=name, render=entry.get("render"), accepted_families=accepted_render_families)
     fallback = entry.get("fallback")
     if fallback is not None:
         if fallback not in _FALLBACKS:
@@ -88,12 +96,14 @@ def _validate_bc_read(entry: dict[str, Any], name: str, schema: dict[str, Any]) 
             )
     # Every mode reads business_object and id; both must be bound or required so
     # the executor is never called without a value for a parameter it dereferences.
+    # ``fields`` is only a known bind key for mode "single".
+    bind_keys = _BC_READ_BIND_KEYS if mode == "single" else _BC_READ_BIND_KEYS_WITHOUT_FIELDS
     validate_bind_and_required(
         kind="bc_read",
         entry=entry,
         name=name,
         schema=schema,
-        known_bind_keys=_BC_READ_BIND_KEYS,
+        known_bind_keys=bind_keys,
         required_params=("business_object", "id"),
         bind_types=_BC_READ_BIND_TYPES,
     )

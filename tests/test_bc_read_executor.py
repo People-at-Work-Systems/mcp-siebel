@@ -183,6 +183,34 @@ def test_bc_read_bind_overlap_with_input_schema_rejected(tmp_path) -> None:
         )
 
 
+def test_bc_read_with_children_rejects_flat_record_render(tmp_path) -> None:
+    """mode 'with_children' must use the hierarchical renderer; the flat
+    record_prose would emit the client's __childrenAvailable / __<child>Available
+    keys as prose lines (no __-prefix stripping)."""
+    with pytest.raises(_SpecError, match="family 'record'"):
+        _reg(
+            tmp_path,
+            {"x": _bcr(mode="with_children", render="record_prose", props=_BO_ID_PROPS, required=_BO_ID_REQ)},
+        )
+
+
+def test_bc_read_with_children_rejects_bound_fields(tmp_path) -> None:
+    """Binding 'fields' on a with_children tool is silently ignored (that mode
+    never reads fields) — reject it at load time so a spec author hears about it."""
+    with pytest.raises(_SpecError, match="not known executor parameters"):
+        _reg(
+            tmp_path,
+            {
+                "x": _bcr(
+                    mode="with_children",
+                    render="record_hierarchical_prose",
+                    bind={"business_object": "Account", "id": "1", "fields": ["Name"]},
+                    props={},
+                )
+            },
+        )
+
+
 def test_bc_read_unknown_bind_key_rejected(tmp_path) -> None:
     with pytest.raises(_SpecError, match="not known executor parameters"):
         _reg(tmp_path, {"x": _bcr(bind={"bogus": "x"}, props=_BO_ID_PROPS, required=_BO_ID_REQ)})

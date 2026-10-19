@@ -119,9 +119,12 @@ def _delete_prose(ctx: dict[str, Any]) -> dict[str, Any]:
     return _text(f"Deleted record {ctx['id']} from {ctx['business_object']}/{ctx['business_component']}.")
 
 
-# The bc_read renderers (family ``record``) take a context dict built by the
-# bc_read executor: the resolved BO/BC, the record id, and the record the client
-# returned. Their output is byte-identical to the former get_record /
+# The bc_read renderers take a context dict built by the bc_read executor: the
+# resolved BO/BC, the record id, and the record the client returned. Two
+# families so a spec can't pair the wrong renderer with the wrong mode:
+# ``record`` (flat — mode "single") and ``hierarchical_record`` (strips the
+# client's ``__``-prefixed child-availability keys — mode "with_children").
+# Their output is byte-identical to the former get_record /
 # get_record_with_children handlers.
 
 
@@ -294,7 +297,7 @@ _RENDERER_REGISTRY: list[tuple[str, str, Renderer]] = [
     ("child_create_prose", "upsert", _child_create_prose),
     ("delete_prose", "delete", _delete_prose),
     ("record_prose", "record", _record_prose),
-    ("record_hierarchical_prose", "record", _record_hierarchical_prose),
+    ("record_hierarchical_prose", "hierarchical_record", _record_hierarchical_prose),
     ("list_prose", "list", _list_prose),
     ("list_json", "list", _list_json),
     ("describe_bc_prose", "describe", _describe_bc_prose),
