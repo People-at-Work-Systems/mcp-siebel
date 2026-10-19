@@ -13,7 +13,8 @@ Modules are grouped by domain:
   validation) used across the domain modules and by the executors.
 * ``auth`` — session establishment.
 * ``metadata`` — catalogue / describe / LOV reads.
-* ``records`` — aggregate / get / create / update / delete on top-level records.
-* ``children`` — child-record create and attachments.
+* ``records`` — the ``aggregate_data`` handler plus the field-curation ranking
+  and scoped-query fallback helpers the ``bc_read`` executor reuses.
+* ``children`` — child-record attachments.
 * ``util`` — date arithmetic, query-syntax reference, web search.
 """

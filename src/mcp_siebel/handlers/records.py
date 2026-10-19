@@ -1,29 +1,27 @@
-"""Top-level record handlers: aggregate / get, plus the records-local helpers
-they share (field-curation ranking, the scoped-query fallback, the field-error
-retry). The create / update / delete handlers moved to the generic
-``bc_upsert`` / ``bc_delete`` executors (see executors/)."""
+"""Records-local helpers shared with the generic executors, plus the
+``aggregate_data`` handler.
+
+The get / create / update / delete record handlers moved to the generic
+``bc_read`` / ``bc_upsert`` / ``bc_delete`` executors (see executors/). What
+stays here is the field-curation ranking (``_rank_fallback_fields``) and the
+scoped-query fallback (``_record_via_query`` / ``_read_fields``) that the
+``bc_read`` curated_query fallback reuses, and the ``aggregate_data`` handler
+(still kind ``python``)."""
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
 
 from ..siebel_client import SiebelError, SiebelRecord
 from ._common import (
     _error,
     _error_result,
-    _format_hierarchical_record,
-    _format_record,
     _require_auth,
-    _resolve_bo_bc,
     _text,
-    _validate_fields_arg,
 )
 
 if TYPE_CHECKING:
     from ..tools import ToolContext
-
-log = logging.getLogger("mcp-siebel")
 
 
 # ---------------------------------------------------------------------------
@@ -254,45 +252,3 @@ async def _aggregate_data(args: dict[str, Any], ctx: ToolContext) -> dict[str, A
     suffix = f"\nResult truncated after {ctx.settings.aggregate_max_pages} pages." if truncated else ""
     rendered = f"{int(value):,}" if value.is_integer() else f"{value:,.2f}"
     return _text(f"{resolved}/{bc}.{field} {operation}: **{rendered}**\nRecords processed: {record_count}{suffix}")
-
-
-async def _get_record(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    bad_fields = _validate_fields_arg(args.get("fields"))
-    if bad_fields:
-        return _error(bad_fields)
-    fields = args.get("fields")
-    try:
-        record = await auth.client.get_record(resolved, bc, str(args["id"]), fields)
-    except SiebelError as exc:
-        # A 404 already comes back as None, so an exception here means the read
-        # itself failed. Retry naming the fields before giving up: a
-        # misconfigured integration component shouldn't make a record
-        # unreadable when a scoped query can read it. If that fails too, the
-        # original Siebel error propagates — it names the offending field,
-        # which is what an administrator needs.
-        log.warning("get_record direct read failed (%s); retrying as a scoped query", exc)
-        record = await _record_via_query(auth, resolved, bc, str(args["id"]), fields, ctx.preferred_fields)
-        if record is None:
-            raise
-    if not record:
-        return _text("No record found.")
-    return _text(f"{resolved}/{bc} record {args['id']}:\n{_format_record(record)}")
-
-
-async def _get_record_with_children(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    auth = _require_auth(ctx)
-    if isinstance(auth, dict):
-        return auth
-    resolved, bc = await _resolve_bo_bc(args, auth)
-    if not resolved:
-        return _text(f'Business Object "{args["business_object"]}" not found.')
-    record = await auth.client.get_record_with_children(resolved, bc, str(args["id"]))
-    if not record:
-        return _text("No record found.")
-    return _text(f"{resolved}/{bc} record {args['id']}:\n{_format_hierarchical_record(record)}")

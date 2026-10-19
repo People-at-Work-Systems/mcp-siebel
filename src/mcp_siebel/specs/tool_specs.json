@@ -453,7 +453,11 @@
     },
     "get_record": {
       "description": "Get a single Siebel record by Id.",
-      "handler": "mcp_siebel.handlers.records:_get_record",
+      "kind": "bc_read",
+      "access": "read",
+      "mode": "single",
+      "render": "record_prose",
+      "fallback": "curated_query",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -474,13 +478,14 @@
           "id"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "read"
+      }
     },
     "get_record_with_children": {
       "description": "Get one record with embedded child records.",
-      "handler": "mcp_siebel.handlers.records:_get_record_with_children",
+      "kind": "bc_read",
+      "access": "read",
+      "mode": "with_children",
+      "render": "record_hierarchical_prose",
       "input_schema": {
         "properties": {
           "business_component": {
@@ -498,9 +503,7 @@
           "id"
         ],
         "type": "object"
-      },
-      "kind": "python",
-      "access": "read"
+      }
     },
     "list_business_objects": {
       "description": "List all available Siebel Business Objects.",

@@ -287,3 +287,78 @@ async def test_get_record_with_children_bo_not_found() -> None:
     assert resp.get("isError") is not True
     assert resp["content"][0]["text"] == 'Business Object "Nope" not found.'
     client.get_record_with_children.assert_not_awaited()
+
+
+# --- get_record: fallback reordering pins ----------------------------------
+#
+# The scoped-query fallback reorders the record to the field order it asked for
+# (Siebel returns fields in its own order); anything Siebel returned but wasn't
+# asked for keeps its place at the end rather than being dropped. These pin the
+# _ordered_record behavior through the bc_read executor.
+
+
+@pytest.mark.asyncio
+async def test_get_record_fallback_escapes_id_in_searchspec() -> None:
+    client = _client()
+    client.get_record = AsyncMock(side_effect=_BROKEN_FIELD_ERROR)
+    client.describe_bc = AsyncMock(return_value=_descriptor("Last Name", "Id"))
+    client.query = AsyncMock(return_value=_query_result({"Last Name": "Taylor"}))
+    reg = ToolRegistry(AppSettings())
+    await reg.call("get_record", {"business_object": "Contact", "id": "O'Brien"}, _session(client, resolve="Contact"))
+    # A single quote in the Id is doubled for the Siebel search-spec literal.
+    assert client.query.call_args.kwargs["search_spec"] == "[Id]='O''Brien'"
+
+
+@pytest.mark.asyncio
+async def test_get_record_fallback_reports_record_in_requested_field_order() -> None:
+    client = _client()
+    client.get_record = AsyncMock(side_effect=_BROKEN_FIELD_ERROR)
+    client.describe_bc = AsyncMock(
+        return_value=_descriptor("Last Name", "Work Phone #", "Primary Street Address", "Id")
+    )
+    # Siebel returns the fields out of order; the fallback reorders to the
+    # curated (preferred) order: name, then phone, then address.
+    client.query = AsyncMock(
+        return_value=_query_result(
+            {"Primary Street Address": "1 St", "Work Phone #": "555", "Last Name": "Taylor"}
+        )
+    )
+    reg = ToolRegistry(AppSettings())
+    text = (
+        await reg.call("get_record", {"business_object": "Contact", "id": "1"}, _session(client, resolve="Contact"))
+    )["content"][0]["text"]
+    assert text.index("Last Name") < text.index("Work Phone #") < text.index("Primary Street Address")
+
+
+@pytest.mark.asyncio
+async def test_get_record_fallback_reports_unrequested_fields_too() -> None:
+    # Siebel can return more than it was asked for. Reordering must never drop a
+    # field — the prompt promises the user every field that came back.
+    client = _client()
+    client.get_record = AsyncMock(side_effect=_BROKEN_FIELD_ERROR)
+    client.query = AsyncMock(return_value=_query_result({"Surprise": "value", "Last Name": "Taylor"}))
+    reg = ToolRegistry(AppSettings())
+    text = (
+        await reg.call(
+            "get_record",
+            {"business_object": "Contact", "id": "1", "fields": ["Last Name"]},
+            _session(client, resolve="Contact"),
+        )
+    )["content"][0]["text"]
+    assert "Surprise: value" in text
+
+
+@pytest.mark.asyncio
+async def test_get_record_with_caller_fields_preserves_their_order() -> None:
+    client = _client()
+    client.get_record = AsyncMock(side_effect=_BROKEN_FIELD_ERROR)
+    client.query = AsyncMock(return_value=_query_result({"Last Name": "Taylor", "First Name": "Chris"}))
+    reg = ToolRegistry(AppSettings())
+    text = (
+        await reg.call(
+            "get_record",
+            {"business_object": "Contact", "id": "1", "fields": ["First Name", "Last Name"]},
+            _session(client, resolve="Contact"),
+        )
+    )["content"][0]["text"]
+    assert text.index("First Name") < text.index("Last Name")

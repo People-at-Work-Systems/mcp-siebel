@@ -116,7 +116,7 @@ def _query_result(record: dict[str, str]) -> SiebelQueryResult:
 
 def test_bc_read_forbids_handler(tmp_path) -> None:
     with pytest.raises(_SpecError, match="handler"):
-        _reg(tmp_path, {"x": _bcr(handler="mcp_siebel.handlers.records:_get_record")})
+        _reg(tmp_path, {"x": _bcr(handler="mcp_siebel.handlers.records:_aggregate_data")})
 
 
 def test_bc_read_access_must_be_read(tmp_path) -> None:

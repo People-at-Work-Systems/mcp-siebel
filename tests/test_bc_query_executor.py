@@ -85,7 +85,7 @@ def _session(query_result: SiebelQueryResult | None = None) -> tuple[SessionCont
 
 def test_bc_query_forbids_handler(tmp_path) -> None:
     with pytest.raises(_SpecError, match="handler"):
-        _reg(tmp_path, {"x": _bcq(handler="mcp_siebel.handlers.records:_get_record")})
+        _reg(tmp_path, {"x": _bcq(handler="mcp_siebel.handlers.records:_aggregate_data")})
 
 
 def test_bc_query_access_must_be_read(tmp_path) -> None:
