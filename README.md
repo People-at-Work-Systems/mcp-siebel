@@ -42,8 +42,9 @@ Do not expect it to work unmodified against a production-customized Siebel.
   REST-enabled **and** not readable by a bogus/guest identity — `authenticate`
   uses it to validate the SSO header. Override per instance if `Account` is
   guest-readable on your Siebel.
-- *(Optional)* a **Brave Search API key** (`SIEBEL_BRAVE_SEARCH_API_KEY`) if you
-  want the `web_search` tool to function.
+- *(Optional)* a **Brave Search API key** (`SIEBEL_BRAVE_SEARCH_API_KEY`) and
+  `SIEBEL_ALLOW_EXTERNAL=true` if you want the `web_search` tool to function —
+  it sends free text to an outside service, so it is gated off by default.
 - *(Optional)* a **bearer token** (`MCP_API_TOKEN`) to guard the HTTP/SSE server.
 
 ## Install
@@ -125,18 +126,27 @@ list. The essentials:
 | `SIEBEL_SSO_HEADER` | `SBL_USER` | SSO header name (standalone mode) |
 | `SIEBEL_ALLOW_WRITE` | `false` | Enable the write tools (create/update/create-child/upload-attachment). Default off — read-only. |
 | `SIEBEL_ALLOW_DELETE` | `false` | Enable `delete_record`. Default off — read-only. |
-| `SIEBEL_DISABLED_TOOLS` | *(empty)* | Additional comma-separated tool names to disable on top of the two gates |
+| `SIEBEL_ALLOW_EXTERNAL` | `false` | Enable external-service tools (`web_search` sends free text to Brave). Default off — customer data can't leave for an outside service without an explicit opt-in. |
+| `SIEBEL_TOOLS_SPEC_PATH` | *(unset → bundled)* | Override the tool-spec JSON file (see [docs/tool-specs.md](docs/tool-specs.md)). Hot-reloaded by mtime; first-load failure aborts startup. |
+| `SIEBEL_DISABLED_TOOLS` | *(empty)* | Additional comma-separated tool names to disable on top of the three gates |
 | `SIEBEL_SYSTEM_PROMPT_PATH` | *(unset → bundled)* | Override the bundled Siebel system prompt |
 | `MCP_API_TOKEN` | *(unset → no auth)* | Bearer token guard on the HTTP server |
 
 The bundled system prompt lives at `mcp_siebel/prompts/siebel-system.md`. Point
 `SIEBEL_SYSTEM_PROMPT_PATH` at your own file to replace it entirely.
 
-**Read-only by default.** With `SIEBEL_ALLOW_WRITE` and `SIEBEL_ALLOW_DELETE`
-both `false` (the default), the write and delete tools are hidden and refused.
-Set the relevant flag to `true` to enable them. `SIEBEL_DISABLED_TOOLS` disables
-additional individual tools on top. Discover the current tool set from the
-server itself (`list_tools` over stdio, or `GET /tools` on the HTTP server).
+**Read-only by default.** With `SIEBEL_ALLOW_WRITE`, `SIEBEL_ALLOW_DELETE` and
+`SIEBEL_ALLOW_EXTERNAL` all `false` (the default), the write, delete and
+external tools are hidden and refused. Set the relevant flag to `true` to enable
+them. `SIEBEL_DISABLED_TOOLS` disables additional individual tools on top.
+Discover the current tool set from the server itself (`list_tools` over stdio,
+or `GET /tools` on the HTTP server).
+
+> The tool set is defined by a JSON spec file — `mcp_siebel/specs/tool_specs.json`
+> by default, overridable with `SIEBEL_TOOLS_SPEC_PATH`. See
+> [docs/tool-specs.md](docs/tool-specs.md) for the file format, every tool kind,
+> access levels, bind/`allowed_fields`/`searchspec_template`, and how to add a
+> tool (JSON-only or via a `python` handler).
 
 ## Development
 
