@@ -1,8 +1,9 @@
-"""Read-only by default: write/delete tools are gated by their ``access`` level
-in the spec (``"write"`` / ``"delete"``) plus SIEBEL_ALLOW_WRITE /
-SIEBEL_ALLOW_DELETE in ToolRegistry. ``disabled_tools`` now returns ONLY the
-explicit SIEBEL_DISABLED_TOOLS list — access gating lives in the registry, not
-in config. See tool_specs.json (per-entry ``access``) and ToolRegistry.
+"""Read-only by default: write/delete/external tools are gated by their
+``access`` level in the spec (``"write"`` / ``"delete"`` / ``"external"``) plus
+SIEBEL_ALLOW_WRITE / SIEBEL_ALLOW_DELETE / SIEBEL_ALLOW_EXTERNAL in
+ToolRegistry. ``disabled_tools`` now returns ONLY the explicit
+SIEBEL_DISABLED_TOOLS list — access gating lives in the registry, not in config.
+See tool_specs.json (per-entry ``access``) and ToolRegistry.
 """
 
 from __future__ import annotations
@@ -17,7 +18,9 @@ import pytest
 from mcp_siebel.config import AppSettings
 from mcp_siebel.tools import SessionContext, ToolRegistry
 
-# The write/delete tool sets, as declared by ``access`` in the bundled spec.
+# The write/delete/external tool sets, as declared by ``access`` in the bundled
+# spec. ``external`` covers tools that send free text to an outside service
+# (web_search) — gated off by default so customer data can't leak into a query.
 WRITE_TOOLS = {
     "create_record",
     "create_record_json",
@@ -26,6 +29,7 @@ WRITE_TOOLS = {
     "upload_attachment",
 }
 DELETE_TOOLS = {"delete_record"}
+EXTERNAL_TOOLS = {"web_search"}
 
 
 def _names(reg: ToolRegistry) -> set[str]:
@@ -79,6 +83,7 @@ def test_list_tools_hides_write_and_delete_by_default() -> None:
     names = _names(reg)
     assert not (names & WRITE_TOOLS), f"write tools visible by default: {names & WRITE_TOOLS}"
     assert not (names & DELETE_TOOLS), f"delete tools visible by default: {names & DELETE_TOOLS}"
+    assert not (names & EXTERNAL_TOOLS), f"external tools visible by default: {names & EXTERNAL_TOOLS}"
     # read + authenticate always present
     assert "authenticate" in names
     assert "query_data" in names
@@ -223,3 +228,113 @@ def test_always_enabled_with_write_access_rejected_at_load(tmp_path) -> None:
     bad = {**_BULK_CREATE, "always_enabled": True}
     with pytest.raises(_SpecError, match="always_enabled is only allowed with access 'read'"):
         _registry_with_extra(tmp_path, {"always_write": bad})
+
+
+# --- external access level (gated by SIEBEL_ALLOW_EXTERNAL) -----------------
+#
+# ``external`` covers tools that send free text to an outside service (e.g.
+# web_search sends the query to Brave). It is gated off by default so a bank
+# deployment can't leak customer data into a search query without an explicit
+# opt-in. The gate works exactly like write/delete: hidden by list_tools(),
+# refused by call(), and a tool added via JSON alone is gated with no code
+# change. always_enabled is not allowed with external (it is only allowed with
+# read).
+
+
+def test_list_tools_hides_external_by_default() -> None:
+    reg = ToolRegistry(AppSettings())
+    assert not (_names(reg) & EXTERNAL_TOOLS), "web_search visible by default"
+
+
+def test_list_tools_allow_external_shows_external_tools() -> None:
+    reg = ToolRegistry(AppSettings(allow_external=True))
+    names = _names(reg)
+    assert EXTERNAL_TOOLS <= names
+    # write/delete still hidden — the gates are independent.
+    assert not (names & WRITE_TOOLS)
+    assert not (names & DELETE_TOOLS)
+
+
+@pytest.mark.asyncio
+async def test_call_refuses_disabled_external_tool() -> None:
+    """An external tool must be refused at call() before any outbound request."""
+    reg = ToolRegistry(AppSettings())
+    result = await reg.call("web_search", {"query": "x"}, None)
+    assert result.get("isError"), f"expected disabled error, got: {result}"
+    text = " ".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
+    assert "disabled" in text.lower()
+    assert "allow_external" in text
+
+
+@pytest.mark.asyncio
+async def test_call_runs_external_tool_when_enabled() -> None:
+    """With allow_external on, call() runs the handler (which surfaces its own
+    'not configured' error rather than a disabled refusal)."""
+    reg = ToolRegistry(AppSettings(allow_external=True))
+    result = await reg.call("web_search", {"query": "x"}, SessionContext(session_id="s1"))
+    assert result.get("isError")
+    text = " ".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
+    assert "disabled" not in text.lower()
+
+
+# A python-kind tool with access "external" added via the spec only — proves the
+# external gate bites with no framework code change (the handler resolves, the
+# access level does the gating).
+_EXTERNAL_FIXTURE: dict[str, object] = {
+    "description": "A NEW external tool added via the spec only.",
+    "kind": "python",
+    "handler": "mcp_siebel.handlers.util:_calculate_date",
+    "access": "external",
+    "input_schema": {
+        "type": "object",
+        "properties": {"expression": {"type": "string"}},
+        "required": ["expression"],
+    },
+}
+
+
+def test_new_external_tool_is_gated_by_default(tmp_path) -> None:
+    reg = _registry_with_extra(tmp_path, {"ext_lookup": _EXTERNAL_FIXTURE})
+    assert "ext_lookup" not in _names(reg)
+
+
+def test_new_external_tool_enabled_by_allow_external(tmp_path) -> None:
+    reg = _registry_with_extra(tmp_path, {"ext_lookup": _EXTERNAL_FIXTURE}, allow_external=True)
+    assert "ext_lookup" in _names(reg)
+
+
+@pytest.mark.asyncio
+async def test_new_external_tool_call_refused_when_gated(tmp_path) -> None:
+    reg = _registry_with_extra(tmp_path, {"ext_lookup": _EXTERNAL_FIXTURE})
+    result = await reg.call("ext_lookup", {"expression": "today"}, None)
+    assert result.get("isError")
+    text = " ".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
+    assert "disabled" in text.lower()
+    assert "allow_external" in text
+
+
+def test_always_enabled_with_external_access_rejected_at_load(tmp_path) -> None:
+    """always_enabled is only allowed with access 'read' — so an external entry
+    marked always_enabled is rejected at load time (it must never bypass the
+    external gate)."""
+    from mcp_siebel.tools import _SpecError
+
+    bad = {**_EXTERNAL_FIXTURE, "always_enabled": True}
+    with pytest.raises(_SpecError, match="always_enabled is only allowed with access 'read'"):
+        _registry_with_extra(tmp_path, {"always_external": bad})
+
+
+# --- startup log of enabled access levels -----------------------------------
+
+
+def test_startup_logs_enabled_access_levels(caplog) -> None:
+    """Construction logs once which access levels are enabled."""
+    with caplog.at_level(logging.INFO, logger="mcp-siebel"):
+        ToolRegistry(AppSettings(allow_write=True, allow_external=True))  # noqa: F841
+    gates = [r.getMessage() for r in caplog.records if "Access gates" in r.getMessage()]
+    assert gates, "no Access gates log line at startup"
+    msg = gates[0]
+    assert "read=on" in msg
+    assert "write=on" in msg
+    assert "delete=off" in msg
+    assert "external=on" in msg

@@ -53,11 +53,15 @@ class AppSettings(BaseSettings):
     demo_enabled: bool = False
 
     # -- Access gates (default off = read-only) -------------------------------
-    # When False, tools whose spec entry has access "write" / "delete" are
-    # hidden by ToolRegistry.list_tools() and refused by call(). The per-tool
-    # access level lives in the spec; these flags are the on/off switch.
+    # When False, tools whose spec entry has access "write" / "delete" /
+    # "external" are hidden by ToolRegistry.list_tools() and refused by call().
+    # The per-tool access level lives in the spec; these flags are the on/off
+    # switch. ``external`` covers tools that send free text to an outside
+    # service (e.g. web search) — off by default so a bank deployment can't
+    # leak customer data into a search query without an explicit opt-in.
     allow_write: bool = False
     allow_delete: bool = False
+    allow_external: bool = False
 
     # -- Session lifetime -----------------------------------------------------
     # Absolute per-session TTL in ms. A session expires this long after its

@@ -796,7 +796,7 @@
         "type": "object"
       },
       "kind": "python",
-      "access": "read"
+      "access": "external"
     }
   }
 }

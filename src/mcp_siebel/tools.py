@@ -86,9 +86,11 @@ class ToolSpec:
     handler: ToolHandler
     # Access level declared in the spec: "read" tools are always available,
     # "write" tools only when SIEBEL_ALLOW_WRITE is set, "delete" only when
-    # SIEBEL_ALLOW_DELETE is set. The registry enforces this gate (both for
-    # listing and for call) so adding a write tool via JSON can't bypass the
-    # read-only default. Authored in the spec, not hard-coded here.
+    # SIEBEL_ALLOW_DELETE is set, "external" (tools that send free text to an
+    # outside service, e.g. web search) only when SIEBEL_ALLOW_EXTERNAL is set.
+    # The registry enforces this gate (both for listing and for call) so adding
+    # a write/external tool via JSON can't bypass the read-only default.
+    # Authored in the spec, not hard-coded here.
     access: str = "read"
     # True for tools the spec marks ``always_enabled`` — exempt from the
     # disabled-tools filter so a deployer can't brick the server by listing
@@ -254,8 +256,10 @@ def _validate_preferred_fields(raw: Any) -> dict[str, list[str]]:
 
 
 # Access levels a spec entry may declare. ``read`` is always available;
-# ``write`` / ``delete`` are gated by SIEBEL_ALLOW_WRITE / SIEBEL_ALLOW_DELETE.
-_ACCESS_LEVELS: set[str] = {"read", "write", "delete"}
+# ``write`` / ``delete`` are gated by SIEBEL_ALLOW_WRITE / SIEBEL_ALLOW_DELETE;
+# ``external`` (tools that send free text to an outside service, e.g. web
+# search) is gated by SIEBEL_ALLOW_EXTERNAL. All three gates default off.
+_ACCESS_LEVELS: set[str] = {"read", "write", "delete", "external"}
 
 # Handler references may only name modules inside this package — the resolver
 # rejects anything outside it so a spec can't pull in arbitrary code.
@@ -291,7 +295,7 @@ def _assemble_python(entry: dict[str, Any], name: str) -> ToolHandler:
 _KINDS: dict[str, _KindSpec] = {
     "python": _KindSpec(
         name="python",
-        allowed_access=frozenset({"read", "write", "delete"}),
+        allowed_access=frozenset({"read", "write", "delete", "external"}),
         allowed_options=frozenset({"handler"}),
         required_options=frozenset({"handler"}),
         validate=_validate_python,
@@ -379,6 +383,15 @@ class ToolRegistry:
         # first good load a reload failure is non-fatal (log + keep last valid).
         self._first_load: bool = True
         self._reload_if_changed()
+        # Log once at startup which access levels are enabled — a deployer who
+        # forgets to flip a gate hears it here, not from a hidden/refused tool
+        # later. ``read`` is always on; the other three follow their flags.
+        log.info(
+            "Access gates: read=on, write=%s, delete=%s, external=%s",
+            "on" if self.settings.allow_write else "off",
+            "on" if self.settings.allow_delete else "off",
+            "on" if self.settings.allow_external else "off",
+        )
 
     @property
     def session_tool_name(self) -> str:
@@ -545,12 +558,16 @@ class ToolRegistry:
 
     def _access_enabled(self, tool: ToolSpec) -> bool:
         """Whether ``tool``'s access level is currently permitted by the
-        SIEBEL_ALLOW_WRITE / SIEBEL_ALLOW_DELETE flags. ``read`` is always on;
-        ``write`` / ``delete`` are off by default (read-only server)."""
+        SIEBEL_ALLOW_WRITE / SIEBEL_ALLOW_DELETE / SIEBEL_ALLOW_EXTERNAL flags.
+        ``read`` is always on; ``write`` / ``delete`` / ``external`` are off by
+        default (read-only server, and no data leaves for an outside service
+        without an explicit opt-in)."""
         if tool.access == "write":
             return bool(self.settings.allow_write)
         if tool.access == "delete":
             return bool(self.settings.allow_delete)
+        if tool.access == "external":
+            return bool(self.settings.allow_external)
         return True
 
     def list_tools(self) -> list[dict[str, Any]]:
@@ -567,11 +584,16 @@ class ToolRegistry:
         tool = self._tools.get(name)
         if tool is None:
             return _error(f'Unknown tool "{name}".')
-        # The access gate takes precedence: a write/delete tool is refused when
-        # its flag is off, regardless of always_enabled (which only exempts the
-        # SIEBEL_DISABLED_TOOLS list, never the access gate).
+        # The access gate takes precedence: a write/delete/external tool is
+        # refused when its flag is off, regardless of always_enabled (which only
+        # exempts the SIEBEL_DISABLED_TOOLS list, never the access gate).
         if not self._access_enabled(tool):
-            return _error(f'Tool "{name}" is disabled (requires allow_write/allow_delete).')
+            flag = {
+                "write": "allow_write",
+                "delete": "allow_delete",
+                "external": "allow_external",
+            }.get(tool.access, "allow_write/allow_delete/allow_external")
+            return _error(f'Tool "{name}" is disabled (requires {flag}).')
         if not tool.always_enabled and name.lower() in {item.lower() for item in self.settings.disabled_tools}:
             return _error(f'Tool "{name}" is disabled.')
         log.debug("Calling tool %s with args %s", name, list(arguments.keys()))
