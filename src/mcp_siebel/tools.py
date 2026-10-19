@@ -70,6 +70,12 @@ class SessionContext:
 class ToolContext:
     settings: AppSettings
     session: SessionContext | None
+    # The hot-reloaded ``preferred_fields`` mapping (Business Component name ->
+    # ordered field names) from the spec, surfaced to executors and handlers so
+    # no module-level global goes stale on reload. Empty when the spec declares
+    # no ``preferred_fields`` section. Populated by ``ToolRegistry.call`` from
+    # the registry's last-successful-load copy.
+    preferred_fields: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -226,6 +232,27 @@ def _valid_resolved_schema(schema: Any) -> bool:
     return all(isinstance(p, dict) and "type" in p for p in props.values())
 
 
+def _validate_preferred_fields(raw: Any) -> dict[str, list[str]]:
+    """Validate the optional top-level ``preferred_fields`` section: an object
+    of Business Component name -> non-empty list of unique strings. Returns the
+    coerced mapping (preserving order); raises ``_SpecError`` on any violation.
+    A missing section (``None``) is valid and yields an empty mapping."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise _SpecError("'preferred_fields' must be an object of Business Component name -> list of field names")
+    result: dict[str, list[str]] = {}
+    for bc, fields in raw.items():
+        if not isinstance(fields, list) or not fields:
+            raise _SpecError(f"'preferred_fields' entry for {bc!r} must be a non-empty list of field names")
+        if not all(isinstance(f, str) for f in fields):
+            raise _SpecError(f"'preferred_fields' entry for {bc!r} must contain only strings")
+        if len(set(fields)) != len(fields):
+            raise _SpecError(f"'preferred_fields' entry for {bc!r} has duplicate field names")
+        result[bc] = list(fields)
+    return result
+
+
 # Access levels a spec entry may declare. ``read`` is always available;
 # ``write`` / ``delete`` are gated by SIEBEL_ALLOW_WRITE / SIEBEL_ALLOW_DELETE.
 _ACCESS_LEVELS: set[str] = {"read", "write", "delete"}
@@ -337,6 +364,10 @@ class ToolRegistry:
         self._spec_mtime: float | None = None
         self._lock = threading.Lock()
         self._tools: dict[str, ToolSpec] = {}
+        # The hot-reloaded preferred_fields mapping (BC name -> ordered field
+        # names); swapped in only on a successful reload so a broken file never
+        # replaces a good mapping. Surfaced to executors/handlers via ToolContext.
+        self._preferred_fields: dict[str, list[str]] = {}
         # Name of the spec's establishes_session tool; set on each successful
         # load. None only when no spec has loaded yet.
         self._session_tool_name: str | None = None
@@ -355,6 +386,12 @@ class ToolRegistry:
         assert self._session_tool_name is not None, "no tool spec loaded"
         return self._session_tool_name
 
+    @property
+    def preferred_fields(self) -> dict[str, list[str]]:
+        """The hot-reloaded ``preferred_fields`` mapping (BC name -> ordered
+        field names) from the spec. Empty when the spec declares no section."""
+        return self._preferred_fields
+
     def health_status(self) -> dict[str, Any]:
         """Read-only snapshot for /health: how many tools are loaded and from
         which spec file (path + mtime). Does not trigger a reload."""
@@ -364,14 +401,14 @@ class ToolRegistry:
             "spec_mtime": self._spec_mtime,
         }
 
-    def _load_valid_tools(self) -> dict[str, ToolSpec]:
+    def _load_valid_tools(self) -> tuple[dict[str, ToolSpec], dict[str, list[str]]]:
         """Read, parse, deref, validate, and resolve executors for the spec file.
-        Returns a fresh ``name → ToolSpec`` map on success; raises
-        ``_SpecError`` on any failure so the caller can keep the last valid
-        set. Every entry must declare a known ``kind``; the kind's validator
-        checks its kind-specific options and the kind's assembler binds the
-        executor — a single bad entry rejects the whole reload so a half-edited
-        spec never partially replaces a good one."""
+        Returns a fresh ``name → ToolSpec`` map and the loaded ``preferred_fields``
+        mapping on success; raises ``_SpecError`` on any failure so the caller can
+        keep the last valid set. Every entry must declare a known ``kind``; the
+        kind's validator checks its kind-specific options and the kind's assembler
+        binds the executor — a single bad entry rejects the whole reload so a
+        half-edited spec never partially replaces a good one."""
         try:
             with open(self._spec_path, encoding="utf-8") as fh:
                 data = json.loads(fh.read(), object_pairs_hook=_no_dup_pairs)
@@ -384,6 +421,10 @@ class ToolRegistry:
         defs = data.get("$defs", {})
         if not isinstance(defs, dict):
             raise _SpecError("'$defs' must be an object")
+        # Optional top-level preferred_fields (BC name -> ordered field names).
+        # Validated here so a bad section fails the load atomically with the
+        # tools; the mapping is surfaced to executors/handlers via ToolContext.
+        preferred_fields = _validate_preferred_fields(data.get("preferred_fields"))
         tools_data: dict[str, Any] = data["tools"]
 
         built: dict[str, ToolSpec] = {}
@@ -447,7 +488,7 @@ class ToolRegistry:
         if session_spec.access != "read":
             raise _SpecError(f"establishes_session tool {session_name!r} must be access 'read'")
         self._session_tool_name = session_name
-        return built
+        return built, preferred_fields
 
     def _reload_if_changed(self) -> None:
         """Re-read the spec file if its mtime changed since the last load. On a
@@ -469,7 +510,7 @@ class ToolRegistry:
                 return
 
             try:
-                built = self._load_valid_tools()
+                built, preferred_fields = self._load_valid_tools()
             except _SpecError as exc:
                 # Record this mtime so a broken file isn't re-read on every list
                 # call; it'll be retried when the file changes again.
@@ -480,6 +521,7 @@ class ToolRegistry:
                 return
 
             self._tools = built
+            self._preferred_fields = preferred_fields
             self._spec_mtime = mtime
             self._first_load = False
             log.info("Loaded %d tool specs from %s", len(built), self._spec_path)
@@ -532,7 +574,9 @@ class ToolRegistry:
             return _error(f'Tool "{name}" is disabled.')
         log.debug("Calling tool %s with args %s", name, list(arguments.keys()))
         try:
-            result = await tool.handler(arguments, ToolContext(settings=self.settings, session=session))
+            result = await tool.handler(
+                arguments, ToolContext(settings=self.settings, session=session, preferred_fields=self._preferred_fields)
+            )
         except Exception as exc:  # noqa: BLE001 — convert any handler crash / SiebelError into a structured result
             return _error_result(exc, name)
         if result.get("isError"):

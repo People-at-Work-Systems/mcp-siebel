@@ -48,6 +48,67 @@
       "type": "string"
     }
   },
+  "preferred_fields": {
+    "Contact": [
+      "Last Name",
+      "First Name",
+      "Middle Name",
+      "Job Title",
+      "Primary Account Name",
+      "Work Phone #",
+      "Cellular Phone #",
+      "Home Phone #",
+      "Fax Phone #",
+      "Email Address",
+      "Primary Street Address",
+      "Primary City",
+      "Primary State",
+      "Primary Postal Code",
+      "Primary Country",
+      "Status",
+      "Comment"
+    ],
+    "Account": [
+      "Name",
+      "Account Status",
+      "Type",
+      "Main Phone Number",
+      "Main Fax Number",
+      "Home Page",
+      "Primary Account Street Address",
+      "Primary Account City",
+      "Primary Account State",
+      "Primary Account Postal Code",
+      "Primary Account Country",
+      "Primary Organization",
+      "Annual Revenue",
+      "Employees"
+    ],
+    "Opportunity": [
+      "Name",
+      "Account",
+      "Sales Stage",
+      "Primary Revenue Amount",
+      "Primary Revenue Close Date",
+      "Win Probability",
+      "Primary Organization",
+      "Sales Method",
+      "Description"
+    ],
+    "Service Request": [
+      "SR Number",
+      "Abstract",
+      "Status",
+      "Substatus",
+      "Priority",
+      "Severity",
+      "Account",
+      "Contact Last Name",
+      "Contact First Name",
+      "Owner",
+      "Description"
+    ]
+  },
   "tools": {
     "aggregate_data": {
       "description": "Compute sum, avg, min, max, or count across all matching records.",

@@ -19,8 +19,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from mcp_siebel.config import AppSettings
 from mcp_siebel.handlers.records import _get_record, _rank_fallback_fields
 from mcp_siebel.siebel_client import SiebelBCDescriptor, SiebelError, SiebelFieldDescriptor, SiebelQueryResult
+from mcp_siebel.tools import ToolRegistry
+
+# The bundled preferred_fields, surfaced to the handler via ctx.preferred_fields.
+_BUNDLED_PREFERRED_FIELDS = ToolRegistry(AppSettings()).preferred_fields
 
 _BROKEN_FIELD_ERROR = SiebelError(
     "Siebel API returned 500",
@@ -52,12 +57,14 @@ def _result(record: dict[str, str]) -> SiebelQueryResult:
 
 
 class _Ctx:
-    """Minimal stand-in for the authenticated tool context."""
+    """Minimal stand-in for the tool context: carries the client/cache the
+    auth gate returns, plus the preferred_fields mapping the handler reads."""
 
     def __init__(self, client) -> None:  # noqa: ANN001
         self.client = client
         self.cache = AsyncMock()
         self.cache.resolve_business_object = AsyncMock(return_value="Contact")
+        self.preferred_fields = _BUNDLED_PREFERRED_FIELDS
 
 
 @pytest.fixture()
@@ -83,7 +90,7 @@ async def test_falls_back_to_a_field_scoped_query(ctx):
         )
     )
 
-    result = await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM"}, None)
+    result = await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM"}, ctx)
 
     assert "Taylor" in result["content"][0]["text"]
     # Scoped by Id, and naming its fields — that is what avoids the broken one.
@@ -107,7 +114,7 @@ async def test_fallback_reuses_caller_supplied_fields(ctx):
         )
     )
 
-    await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM", "fields": ["Last Name"]}, None)
+    await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM", "fields": ["Last Name"]}, ctx)
 
     ctx.client.describe_bc.assert_not_awaited()
     assert ctx.client.query.call_args.kwargs["fields"] == ["Last Name"]
@@ -123,7 +130,7 @@ async def test_record_ids_are_escaped_in_the_fallback(ctx):
         )
     )
 
-    await _get_record({"business_object": "Contact", "id": "O'Brien"}, None)
+    await _get_record({"business_object": "Contact", "id": "O'Brien"}, ctx)
 
     assert "[Id]='O''Brien'" in ctx.client.query.call_args.kwargs["search_spec"]
 
@@ -133,7 +140,7 @@ async def test_happy_path_does_not_query(ctx):
     ctx.client.get_record = AsyncMock(return_value={"Last Name": "Taylor"})
     ctx.client.query = AsyncMock()
 
-    result = await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM"}, None)
+    result = await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM"}, ctx)
 
     assert "Taylor" in result["content"][0]["text"]
     ctx.client.query.assert_not_awaited()
@@ -146,7 +153,7 @@ async def test_surfaces_the_siebel_error_when_the_fallback_also_fails(ctx):
     ctx.client.describe_bc = AsyncMock(side_effect=SiebelError("nope", 500, "{}"))
 
     with pytest.raises(SiebelError):
-        await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM"}, None)
+        await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM"}, ctx)
 
 
 @pytest.mark.asyncio
@@ -154,7 +161,7 @@ async def test_missing_record_still_reports_not_found(ctx):
     ctx.client.get_record = AsyncMock(return_value=None)
     ctx.client.query = AsyncMock()
 
-    result = await _get_record({"business_object": "Contact", "id": "nope"}, None)
+    result = await _get_record({"business_object": "Contact", "id": "nope"}, ctx)
 
     assert "No record found" in result["content"][0]["text"]
     ctx.client.query.assert_not_awaited()
@@ -291,7 +298,7 @@ async def _fallback_fields(ctx, *, bc_fields=_CONTACT_BC_FIELDS, args=None) -> l
     ctx.client.get_record = AsyncMock(side_effect=_BROKEN_FIELD_ERROR)
     ctx.client.describe_bc = AsyncMock(return_value=_descriptor(*bc_fields, types=_CONTACT_BC_TYPES))
     ctx.client.query = AsyncMock(return_value=_result({"Last Name": "Taylor"}))
-    await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM", **(args or {})}, None)
+    await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM", **(args or {})}, ctx)
     return list(ctx.client.query.call_args.kwargs["fields"])
 
 
@@ -371,7 +378,7 @@ async def test_record_is_reported_in_the_order_it_was_asked_for(ctx):
         )
     )
 
-    text = (await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM"}, None))["content"][0]["text"]
+    text = (await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM"}, ctx))["content"][0]["text"]
 
     assert text.index("Last Name") < text.index("Work Phone #") < text.index("Primary City")
 
@@ -387,7 +394,7 @@ async def test_caller_supplied_field_order_is_preserved_too(ctx):
             "id": "7SIA-5TYFM",
             "fields": ["First Name", "Last Name"],
         },
-        None,
+        ctx,
     )
     text = result["content"][0]["text"]
 
@@ -401,6 +408,6 @@ async def test_unrequested_fields_are_still_reported(ctx):
     ctx.client.get_record = AsyncMock(side_effect=_BROKEN_FIELD_ERROR)
     ctx.client.query = AsyncMock(return_value=_result({"Surprise": "value", "Last Name": "Taylor"}))
 
-    result = await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM", "fields": ["Last Name"]}, None)
+    result = await _get_record({"business_object": "Contact", "id": "7SIA-5TYFM", "fields": ["Last Name"]}, ctx)
 
     assert "Surprise: value" in result["content"][0]["text"]

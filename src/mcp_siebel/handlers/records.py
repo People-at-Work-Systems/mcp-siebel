@@ -108,84 +108,27 @@ def _rank_fallback_fields(
 # names — the ranking is a heuristic and the demo instance kept proving it
 # (a Contact came back with two opt-out flags and no address).
 #
-# Mirrors a caller-side preferred-fields list, which does
-# the same job for the navigator. Treated as an ordered *preference list*,
-# intersected with the fields the BC actually reports: naming a field this
-# deployment lacks must cost one field, never the whole read (Siebel answers
-# HTTP 400 for an unknown field). Contact's names are confirmed against the
-# demo instance's describe output; the rest are standard Siebel names.
-_PREFERRED_FIELDS: dict[str, tuple[str, ...]] = {
-    "Contact": (
-        "Last Name",
-        "First Name",
-        "Middle Name",
-        "Job Title",
-        "Primary Account Name",
-        "Work Phone #",
-        "Cellular Phone #",
-        "Home Phone #",
-        "Fax Phone #",
-        "Email Address",
-        "Primary Street Address",
-        "Primary City",
-        "Primary State",
-        "Primary Postal Code",
-        "Primary Country",
-        "Status",
-        "Comment",
-    ),
-    "Account": (
-        "Name",
-        "Account Status",
-        "Type",
-        "Main Phone Number",
-        "Main Fax Number",
-        "Home Page",
-        "Primary Account Street Address",
-        "Primary Account City",
-        "Primary Account State",
-        "Primary Account Postal Code",
-        "Primary Account Country",
-        "Primary Organization",
-        "Annual Revenue",
-        "Employees",
-    ),
-    "Opportunity": (
-        "Name",
-        "Account",
-        "Sales Stage",
-        "Primary Revenue Amount",
-        "Primary Revenue Close Date",
-        "Win Probability",
-        "Primary Organization",
-        "Sales Method",
-        "Description",
-    ),
-    "Service Request": (
-        "SR Number",
-        "Abstract",
-        "Status",
-        "Substatus",
-        "Priority",
-        "Severity",
-        "Account",
-        "Contact Last Name",
-        "Contact First Name",
-        "Owner",
-        "Description",
-    ),
-}
+# The mapping lives in the spec (top-level ``preferred_fields``), hot-reloaded
+# and surfaced to handlers via ``ToolContext.preferred_fields``; it is treated
+# as an ordered *preference list*, intersected with the fields the BC actually
+# reports: naming a field this deployment lacks must cost one field, never the
+# whole read (Siebel answers HTTP 400 for an unknown field). Contact's names are
+# confirmed against the demo instance's describe output; the rest are standard
+# Siebel names.
 
 
-def _read_fields(business_component: str, described: list[Any]) -> list[str]:
+def _read_fields(
+    business_component: str, described: list[Any], preferred_fields: dict[str, list[str]]
+) -> list[str]:
     """The field list to read a whole record with.
 
-    Curated order where the object is known, ranked heuristics otherwise — and
-    ranked too when a curated list matches nothing, so a deployment that
-    renamed its fields still gets a usable record instead of an empty read.
+    Curated order where the object is known (from ``preferred_fields``), ranked
+    heuristics otherwise — and ranked too when a curated list matches nothing,
+    so a deployment that renamed its fields still gets a usable record instead
+    of an empty read.
     """
     available = {f.name for f in described if f.name}
-    curated = [f for f in _PREFERRED_FIELDS.get(business_component, ()) if f in available]
+    curated = [f for f in preferred_fields.get(business_component, []) if f in available]
     if curated:
         # Follow-up tool calls need the Id even though the prompt never shows it.
         return [*curated, "Id"] if "Id" in available else curated
@@ -217,7 +160,12 @@ def _is_audit_field(name: str) -> bool:
 
 
 async def _record_via_query(
-    auth: Any, business_object: str, business_component: str, record_id: str, fields: Any
+    auth: Any,
+    business_object: str,
+    business_component: str,
+    record_id: str,
+    fields: Any,
+    preferred_fields: dict[str, list[str]],
 ) -> Any:
     """Fetch a single record by Id with an explicit field list.
 
@@ -231,7 +179,7 @@ async def _record_via_query(
     if not fields:
         descriptor = await auth.client.describe_bc(business_object, business_component)
         usable = [f for f in descriptor.fields if f.name and not _is_audit_field(f.name)]
-        fields = _read_fields(business_component, usable)
+        fields = _read_fields(business_component, usable, preferred_fields)
     safe_id = str(record_id).replace("'", "''")
     result = await auth.client.query(
         business_object,
@@ -329,7 +277,7 @@ async def _get_record(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         # original Siebel error propagates — it names the offending field,
         # which is what an administrator needs.
         log.warning("get_record direct read failed (%s); retrying as a scoped query", exc)
-        record = await _record_via_query(auth, resolved, bc, str(args["id"]), fields)
+        record = await _record_via_query(auth, resolved, bc, str(args["id"]), fields, ctx.preferred_fields)
         if record is None:
             raise
     if not record:
