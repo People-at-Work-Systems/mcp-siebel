@@ -1,11 +1,20 @@
 # Enlisting mcp-siebel in MCP clients
 
-mcp-siebel ships two transports, both from the same package:
+mcp-siebel ships two transports, both from the same package. The package is not
+yet on PyPI — install it from Git (see the README's [Install](../README.md#install)
+section):
+
+```bash
+# stdio only
+pip install git+https://github.com/People-at-Work-Systems/mcp-siebel.git
+# stdio + HTTP/SSE
+pip install "git+https://github.com/People-at-Work-Systems/mcp-siebel.git#egg=mcp-siebel[http]"
+```
 
 | Transport | Console script | Install extra | Typical clients |
 |---|---|---|---|
-| **stdio** | `mcp-siebel` | `pip install mcp-siebel` | Claude Desktop, Claude Code, Cursor, VS Code + Copilot, Cline, Zed |
-| **HTTP/SSE** | `mcp-siebel-http` | `pip install mcp-siebel[http]` | Clients that connect to a URL (ChatGPT Connectors; Claude Desktop via `mcp-remote`) |
+| **stdio** | `mcp-siebel` | base install | Claude Desktop, Claude Code, Cursor, VS Code + Copilot, Cline, Zed |
+| **HTTP/SSE** | `mcp-siebel-http` | `[http]` | Clients that connect to a URL (ChatGPT Connectors; Claude Desktop via `mcp-remote`) |
 
 The stdio server is the default and needs no extra deps. The HTTP/SSE server
 (`mcp-siebel-http`) listens on `0.0.0.0:8201` with the MCP SSE stream at
@@ -179,7 +188,7 @@ File: `~/.config/zed/settings.json` under `context_servers`:
 Run the server (e.g. on `localhost:8201`):
 
 ```bash
-pip install "mcp-siebel[http]"
+pip install "git+https://github.com/People-at-Work-Systems/mcp-siebel.git#egg=mcp-siebel[http]"
 mcp-siebel-http   # listens on 0.0.0.0:8201; MCP SSE stream at /sse
 # Optionally guard it:  MCP_API_TOKEN=secret mcp-siebel-http
 ```

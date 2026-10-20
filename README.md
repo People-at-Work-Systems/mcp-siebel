@@ -50,21 +50,35 @@ Do not expect it to work unmodified against a production-customized Siebel.
 
 ## Install
 
+The package is not yet on PyPI — install from the Git repo. (Once the first
+`v*` tag is cut, the release workflow publishes to PyPI and these collapse to
+`pip install mcp-siebel` / `pip install mcp-siebel[http]`.)
+
 ```bash
 # stdio transport (Claude Desktop) — no fastapi needed
-pip install mcp-siebel
+pip install git+https://github.com/People-at-Work-Systems/mcp-siebel.git
+# or with uv
+uv pip install git+https://github.com/People-at-Work-Systems/mcp-siebel.git
 
 # stdio + HTTP/SSE server
-pip install mcp-siebel[http]
+pip install "git+https://github.com/People-at-Work-Systems/mcp-siebel.git#egg=mcp-siebel[http]"
+uv pip install "mcp-siebel[http] @ git+https://github.com/People-at-Work-Systems/mcp-siebel.git"
+```
+
+To get the `mcp-siebel` / `mcp-siebel-http` console scripts on `PATH` as a uv
+tool:
+
+```bash
+uv tool install mcp-siebel --from git+https://github.com/People-at-Work-Systems/mcp-siebel.git
 ```
 
 > **Requires `mcp>=2.0,<3`.** The server uses the mcp 2.x lowlevel `Server`
 > API (`on_list_tools` / `on_call_tool` constructor kwargs).
 >
 > Note: the `mcp` SDK itself depends on `uvicorn` and `starlette` (core deps,
-> not extras), so a base `pip install mcp-siebel` does pull them transitively.
-> The `[http]` extra gates only `fastapi` and `prometheus-fastapi-instrumentator`
-> — the deps the HTTP/SSE server adds on top of what `mcp` already brings.
+> not extras), so a base install does pull them transitively. The `[http]` extra
+> gates only `fastapi` and `prometheus-fastapi-instrumentator` — the deps the
+> HTTP/SSE server adds on top of what `mcp` already brings.
 
 > Ready-to-paste MCP server entries for Claude Desktop, Claude Code, Cursor,
 > VS Code + Copilot, Cline, Zed, and ChatGPT (remote) live in
