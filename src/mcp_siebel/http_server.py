@@ -57,6 +57,7 @@ from mcp.types import (
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
 
+from . import __version__
 from .config import load_settings
 from .context import CorrelationMiddleware, session_id_var, turn_id_var
 from .notifications import McpSessionBroadcaster, SseSubscribers, make_spec_changed_hook, sse_events_stream
@@ -186,7 +187,7 @@ async def _lifespan(app: FastAPI):
 app = FastAPI(
     title="MCP Siebel",
     description="MCP-style tool server for Oracle Siebel 26.2+",
-    version="0.1.0",
+    version=__version__,
     lifespan=_lifespan,
 )
 
