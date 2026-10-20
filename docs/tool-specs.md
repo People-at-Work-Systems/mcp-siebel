@@ -6,9 +6,9 @@ by default — not by code. The registry reads it at startup, resolves a generic
 executor per tool from the entry's `kind`, and hot-reloads it when it changes
 (a `watchfiles` file watcher plus a lazy mtime fallback — see
 [Hot-reload](#hot-reload)). This document is the reference for authoring and
-overriding that file: the file format, every kind, the access gates, `bind` /
-`allowed_fields` / `searchspec_template`, how to add a tool, and the
-hot-reload semantics.
+overriding that file: the file format, every kind, the per-tool `enabled`
+flag, `bind` / `allowed_fields` / `searchspec_template`, how to add a tool,
+and the hot-reload semantics.
 
 A JSON Schema for the file lives at
 [`src/mcp_siebel/specs/tool_specs.schema.json`](../src/mcp_siebel/specs/tool_specs.schema.json);
@@ -45,55 +45,41 @@ options**. The common fields are:
 |---|---|---|---|
 | `description` | yes | string | The tool description shown to the model. |
 | `kind` | yes | string | Selects the executor. One of `python`, `bc_query`, `bc_upsert`, `bc_delete`, `bc_describe`, `bc_read`, `static_text`. |
-| `access` | yes | string | Access level: `read`, `write`, `delete`, `external`. See [Access levels](#access-levels). |
-| `always_enabled` | no | bool | Exempts the tool from `SIEBEL_DISABLED_TOOLS`. Only allowed with `access: "read"`. |
-| `establishes_session` | no | bool | True for the one tool the transports call to create a session. Exactly one entry must set it; it must also be `always_enabled` and `access: "read"`. |
+| `enabled` | no | bool | The single on/off switch. Defaults to `true`; set `false` to hide the tool from `list_tools` and refuse it at `call`. See [Per-tool enabled flag](#per-tool-enabled-flag). |
+| `establishes_session` | no | bool | True for the one tool the transports call to create a session. Exactly one entry must set it; it must also be `enabled: true`. |
 | `input_schema` | yes | object | The MCP `inputSchema` (a JSON Schema). Every property must carry a concrete `type` after `$ref` inlining. |
 
 Kind-specific options follow, alphabetically; `input_schema` is conventionally
 last. (The bundled file is normalized to that key order.)
 
-## Access levels
+## Per-tool enabled flag
 
-The `access` field is the single source of truth for gating. The registry hides
-a tool from `list_tools` and refuses it at `call` when its gate is off —
-regardless of `always_enabled`, which only exempts the `SIEBEL_DISABLED_TOOLS`
-list.
+`enabled` is the single on/off switch for a tool — authored in the spec, not an
+env var. The registry hides a tool from `list_tools` and refuses it at `call`
+when `enabled: false`.
 
-| `access` | Gate | Default | Meaning |
-|---|---|---|---|
-| `read` | — | always on | Pure Siebel reads. Always available. |
-| `write` | `SIEBEL_ALLOW_WRITE` | off | Create / update / upload — mutates Siebel data. |
-| `delete` | `SIEBEL_ALLOW_DELETE` | off | Delete — removes Siebel data. |
-| `external` | `SIEBEL_ALLOW_EXTERNAL` | off | Sends free text to an outside service (e.g. `web_search` → Brave). Off by default so customer data can't leak into a search query without an explicit opt-in. |
+- **Default `true`** — an entry that omits `enabled` is enabled.
+- **Read-only by default** — the bundled spec sets `enabled: false` on its 7
+  write/delete/external tools so the server is read-only out of the box:
 
-Which access level a kind permits is fixed in code (and mirrored in the schema):
+  | Tool | Kind | Why gated |
+  |---|---|---|
+  | `create_record`, `create_record_json`, `create_child_record`, `update_record`, `upload_attachment` | `bc_upsert` / `python` | Mutates Siebel data. |
+  | `delete_record` | `bc_delete` | Removes Siebel data. |
+  | `web_search` | `python` | Sends free text to an outside service (Brave) — off so customer data can't leak into a search query without an explicit opt-in. |
 
-| Kind | Allowed `access` |
-|---|---|
-| `python` | `read`, `write`, `delete`, `external` |
-| `bc_query` | `read` |
-| `bc_upsert` | `write` |
-| `bc_delete` | `delete` |
-| `bc_describe` | `read` |
-| `bc_read` | `read` |
-| `static_text` | `read` |
-
-The registry logs once at startup which access levels are enabled.
-
-### `always_enabled`
-
-Exempts a tool from `SIEBEL_DISABLED_TOOLS` so a deployer can't brick the server
-by listing it there (the session-establishment tool is the one that matters).
-Load-time rule: **only allowed with `access: "read"`** — it must never bypass
-the access gate. The registry logs a warning if `SIEBEL_DISABLED_TOOLS` lists an
-always-enabled tool (the entry is ignored, not silently dropped).
+- **Enabling a tool** — flip `enabled: true` on its entry in an override spec
+  pointed at by `SIEBEL_TOOLS_SPEC_PATH`. There is no env-var gate; the spec is
+  the only switch.
+- **Hot-reloaded** — flipping `enabled` on a live server reaches connected
+  clients on the next `tools/list` (see [Hot-reload](#hot-reload)).
 
 ### `establishes_session`
 
 Exactly one entry must mark `establishes_session: true`. It must also be
-`always_enabled` and `access: "read"`. The transports read its name from the
-registry (`session_tool_name`) so they need not hard-code a tool name.
+`enabled: true` (disabling the session tool would brick the server — there would
+be no way to establish a session). The transports read its name from the registry
+(`session_tool_name`) so they need not hard-code a tool name.
 
 ## Kinds
 
@@ -111,7 +97,7 @@ service call, a paginated aggregation loop, an external HTTP call).
 |---|---|---|---|
 | `handler` | yes | string | `mcp_siebel.handlers.<module>:<func>`. The resolver permits **only** modules under `mcp_siebel.handlers`; anything outside is rejected. |
 
-Allowed `access`: `read`, `write`, `delete`, `external`. No `render`.
+No `render`. The bundled `python` tools are `enabled: false` where they mutate data or call an outside service (`upload_attachment`, `web_search`).
 
 Example (the bundled `aggregate_data`):
 
@@ -119,7 +105,6 @@ Example (the bundled `aggregate_data`):
 "aggregate_data": {
   "description": "Compute sum, avg, min, max, or count across all matching records.",
   "kind": "python",
-  "access": "read",
   "handler": "mcp_siebel.handlers.records:_aggregate_data",
   "input_schema": {
     "properties": {
@@ -144,7 +129,7 @@ Example (the bundled `aggregate_data`):
 | `bind` | no | object | See [bind](#bind). |
 | `searchspec_template` | no | string | See [searchspec_template](#searchspec_template). Mutually exclusive with a `searchspec` argument or a bound `searchspec`. |
 
-Allowed `access`: `read`. Renderer families: `query` (`query_prose`,
+Renderer families: `query` (`query_prose`,
 `child_query_prose`, `query_json`) for `result: "records"`; `count`
 (`count_prose`, `count_json`) for `result: "count"`. Required params:
 `business_object` (always); `parent_id` + `child_business_component` for
@@ -156,7 +141,6 @@ Example (`query_data`):
 "query_data": {
   "description": "Query Siebel CRM data using a Siebel searchspec expression.",
   "kind": "bc_query",
-  "access": "read",
   "render": "query_prose",
   "result": "records",
   "scope": "root",
@@ -182,10 +166,12 @@ Example (`query_data`):
 | `bind` | no | object | See [bind](#bind). |
 | `allowed_fields` | no | array of strings | See [allowed_fields](#allowed_fields). **Required (non-empty) when `business_component` is bound.** |
 
-Allowed `access`: `write`. Renderer family: `upsert` (`create_prose`,
+Renderer family: `upsert` (`create_prose`,
 `create_json`, `update_prose`, `child_create_prose`). Required params:
 `business_object` (always); `id` for `operation: "update"`; `parent_id` +
-`child_business_component` for `scope: "child"`.
+`child_business_component` for `scope: "child"`. The bundled `bc_upsert` tools
+(`create_record`, `create_record_json`, `create_child_record`, `update_record`)
+are `enabled: false` (read-only by default).
 
 Example (`create_record`):
 
@@ -193,7 +179,6 @@ Example (`create_record`):
 "create_record": {
   "description": "Create a new Siebel record.",
   "kind": "bc_upsert",
-  "access": "write",
   "operation": "create",
   "render": "create_prose",
   "scope": "root",
@@ -215,7 +200,7 @@ Example (`create_record`):
 | `render` | yes | string | A `delete`-family renderer. |
 | `bind` | no | object | See [bind](#bind). |
 
-Allowed `access`: `delete`. Renderer family: `delete` (`delete_prose`).
+Renderer family: `delete` (`delete_prose`). The bundled `delete_record` is `enabled: false` (read-only by default).
 Required params: `business_object`, `id`.
 
 Example (`delete_record`):
@@ -224,7 +209,6 @@ Example (`delete_record`):
 "delete_record": {
   "description": "Delete a Siebel record by Id.",
   "kind": "bc_delete",
-  "access": "delete",
   "render": "delete_prose",
   "input_schema": {
     "properties": {
@@ -245,7 +229,7 @@ Example (`delete_record`):
 | `render` | yes | string | A renderer matching the source's family. |
 | `bind` | no | object | See [bind](#bind). |
 
-Allowed `access`: `read`. Renderer families: `list` (`list_prose`, `list_json`)
+Renderer families: `list` (`list_prose`, `list_json`)
 for `business_objects`; `describe` (`describe_bc_prose`, `describe_bc_json`) for
 `bc_descriptor`; `repository` (`repository_prose`, `repository_json`) for
 `repository`. Required params: `business_object` (except for
@@ -257,7 +241,6 @@ Example (`describe_business_object`):
 "describe_business_object": {
   "description": "Get field schema for a Siebel Business Object/Component.",
   "kind": "bc_describe",
-  "access": "read",
   "render": "describe_bc_prose",
   "source": "bc_descriptor",
   "input_schema": {
@@ -279,7 +262,7 @@ Example (`describe_business_object`):
 | `fallback` | no | `curated_query` | Only valid with `mode: "single"`. On a direct-read failure, retry as a scoped query that names fields (see below). |
 | `bind` | no | object | See [bind](#bind). |
 
-Allowed `access`: `read`. Renderer families: `record` (`record_prose`) for
+Renderer families: `record` (`record_prose`) for
 `single`; `hierarchical_record` (`record_hierarchical_prose`) for
 `with_children`. Required params: `business_object`, `id`.
 
@@ -299,7 +282,6 @@ Example (`get_record`):
 "get_record": {
   "description": "Get a single Siebel record by Id.",
   "kind": "bc_read",
-  "access": "read",
   "fallback": "curated_query",
   "mode": "single",
   "render": "record_prose",
@@ -324,7 +306,7 @@ ignored (the model need not pass any).
 |---|---|---|---|
 | `text` | yes | string \| array of strings | A list is joined with `\n` so long texts stay readable in JSON. |
 
-Allowed `access`: `read`. No `render`.
+No `render`.
 
 Example (`get_query_syntax`):
 
@@ -332,7 +314,6 @@ Example (`get_query_syntax`):
 "get_query_syntax": {
   "description": "Return Siebel Query Language syntax reference.",
   "kind": "static_text",
-  "access": "read",
   "text": [
     "Use <> for not equal; never use !=.",
     "Field names go in square brackets: [Status] = 'Open'."
@@ -418,8 +399,10 @@ design templates so a value can only land inside a single-quoted literal.
 If one of the generic kinds fits, adding a tool is a spec edit only — no code,
 no restart of the registry's import graph (the spec is hot-reloaded):
 
-1. Add an entry under `tools` with the right `kind`, `access`, the kind's
-   required options, and an `input_schema`.
+1. Add an entry under `tools` with the right `kind`, the kind's required
+   options, and an `input_schema`. Set `"enabled": false` if the tool should be
+   hidden (defaults to `true`); the bundled spec disables its 7
+   write/delete/external tools this way.
 2. Save the file. The next `tools/list` serves the new tool (see
    [Hot-reload](#hot-reload)).
 
@@ -465,7 +448,7 @@ reloads if its mtime changed. `SIEBEL_TOOLS_SPEC_WATCH=false` disables the
 watcher; the lazy fallback still applies either way.
 
 Every reload re-runs the full pipeline (parse with duplicate-key detection →
-deref `$ref` → validate → per-entry kind + executor + access/session-rule
+deref `$ref` → validate → per-entry kind + executor + enabled/session-rule
 resolution) and, on success, builds a fresh immutable **snapshot** and swaps
 the single registry reference under its lock. `list_tools()` and `call()` read
 that reference exactly once per request, so a request never mixes data from two
@@ -515,7 +498,6 @@ status and phone — both shaped by the spec with no Python.
 "active_accounts_by_type": {
   "description": "List active accounts of a given type (Account BC).",
   "kind": "bc_query",
-  "access": "read",
   "bind": {
     "business_object": "Account",
     "business_component": "Account",
@@ -550,7 +532,6 @@ rejected.
 "update_account_contact_info": {
   "description": "Update an account's status and main phone number only.",
   "kind": "bc_upsert",
-  "access": "write",
   "allowed_fields": ["Account Status", "Main Phone Number"],
   "bind": {
     "business_object": "Account",
@@ -573,5 +554,7 @@ rejected.
 The BC is pinned, so the tool can only ever write to `Account`. `allowed_fields`
 constrains the write to `Account Status` and `Main Phone Number`; any other
 field in `data` is refused. (Binding `business_component` requires a non-empty
-`allowed_fields` — enforced at load.) Enable with `SIEBEL_ALLOW_WRITE=true`; the
-tool is hidden and refused while the gate is off.
+`allowed_fields` — enforced at load.) The bundled `bc_upsert` tools are
+`enabled: false`; flip `enabled: true` on this entry in your override spec
+(`SIEBEL_TOOLS_SPEC_PATH`) to turn it on — the tool is hidden and refused
+while `enabled: false`.
