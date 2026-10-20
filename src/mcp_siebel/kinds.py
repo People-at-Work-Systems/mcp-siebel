@@ -2,10 +2,10 @@
 
 A tool's ``kind`` (declared in the spec) selects an executor: a small, generic
 piece of framework code that turns the spec entry + the runtime arguments into a
-tool result. Each kind declares which spec options it requires/allows and which
-access levels it permits, so the registry can validate kind-specific options at
-load time. This module holds only the ``_KindSpec`` dataclass and the set of
-spec fields common to every kind; the kinds themselves are registered in
+tool result. Each kind declares which spec options it requires/allows, so the
+registry can validate kind-specific options at load time. This module holds only
+the ``_KindSpec`` dataclass and the set of spec fields common to every kind; the
+kinds themselves are registered in
 ``tools.py`` (the ``python`` escape hatch) and in ``executors/`` (the generic
 executors).
 
@@ -32,7 +32,7 @@ class _SpecError(Exception):
 # (e.g. ``handler`` for python, ``scope``/``result``/``render`` for bc_query) are
 # everything else on the entry and are validated per-kind.
 _COMMON_FIELDS: frozenset[str] = frozenset(
-    {"description", "input_schema", "kind", "access", "always_enabled", "establishes_session"}
+    {"description", "input_schema", "kind", "enabled", "establishes_session"}
 )
 
 # (entry, tool_name, resolved input_schema) -> None; raise on an invalid
@@ -48,8 +48,6 @@ AssembleFn = Callable[[dict[str, Any], str], Any]
 @dataclass(frozen=True)
 class _KindSpec:
     name: str
-    # Access levels this kind permits (checked against the entry's ``access``).
-    allowed_access: frozenset[str]
     # Kind-specific option keys the entry may carry.
     allowed_options: frozenset[str]
     # Kind-specific option keys the entry must carry.

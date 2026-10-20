@@ -13,7 +13,7 @@ The spec may use a top-level ``$defs`` block with ``$ref`` for shared parameter
 definitions; the loader inlines every ``$ref`` before exposing schemas, so
 clients always receive a fully-resolved inputSchema. Every reload re-runs the
 full pipeline (parse with duplicate detection → deref → validate → per-entry
-kind + executor + access/session-rule resolution) and only swaps in the new set
+kind + executor + enabled/session-rule resolution) and only swaps in the new set
 on success; on any failure the last valid set keeps serving and the failure is
 logged. If the very first load fails (no last valid set) construction raises
 ``_SpecError`` so the process exits non-zero with a clear error — the handlers
@@ -90,26 +90,18 @@ class ToolSpec:
     description: str
     input_schema: dict[str, Any]
     handler: ToolHandler
-    # Access level declared in the spec: "read" tools are always available,
-    # "write" tools only when SIEBEL_ALLOW_WRITE is set, "delete" only when
-    # SIEBEL_ALLOW_DELETE is set, "external" (tools that send free text to an
-    # outside service, e.g. web search) only when SIEBEL_ALLOW_EXTERNAL is set.
-    # The registry enforces this gate (both for listing and for call) so adding
-    # a write/external tool via JSON can't bypass the read-only default.
-    # Authored in the spec, not hard-coded here.
-    access: str = "read"
-    # True for tools the spec marks ``always_enabled`` — exempt from the
-    # disabled-tools filter so a deployer can't brick the server by listing
-    # them in SIEBEL_DISABLED_TOOLS (the auth-establishment tool is the one
-    # that matters). Authored in the spec, not hard-coded here, so tools.py
-    # stays free of tool names. Load-time rule: always_enabled is only allowed
-    # with access "read" — it must never bypass the access gate.
-    always_enabled: bool = False
+    # The single on/off switch for a tool. ``False`` hides it from
+    # ``list_tools()`` and refuses it in ``call()``. The bundled spec sets
+    # ``enabled: false`` on its 7 write/delete/external tools so the server is
+    # read-only by default; a deployer flips ``enabled: true`` on an entry in
+    # an override spec (``SIEBEL_TOOLS_SPEC_PATH``) to turn a tool on — no env
+    # var. Authored in the spec, not hard-coded here.
+    enabled: bool = True
     # True for the single entry the spec marks ``establishes_session`` — the
     # tool the transports call to create a session and whose session_id they
     # inject into results/schemas. Exactly one such entry is required, and it
-    # must be always_enabled + access "read". Authored in the spec, not
-    # hard-coded here, so tools.py stays free of tool names.
+    # must be enabled. Authored in the spec, not hard-coded here, so tools.py
+    # stays free of tool names.
     establishes_session: bool = False
 
 
@@ -129,9 +121,9 @@ class ToolSnapshot:
     touched-but-identical file and a failed reload both leave it untouched.
     ``content_hash`` is a stable SHA-256 of the exposed tool list (the filtered
     set clients see via ``list_tools()``), so a spec edit that only touches a
-    gated-off tool — leaving the exposed list unchanged — is not advertised as a
-    change. ``exposed_tools`` is that filtered list, precomputed at build time
-    so ``list_tools()`` is a single reference read.
+    disabled (``enabled: false``) tool — leaving the exposed list unchanged — is
+    not advertised as a change. ``exposed_tools`` is that filtered list,
+    precomputed at build time so ``list_tools()`` is a single reference read.
     """
 
     tools: dict[str, ToolSpec]
@@ -237,11 +229,11 @@ def _deref(node: Any, defs: dict[str, Any], _stack: tuple[str, ...] = ()) -> Any
 
 def _valid_spec_entry(entry: Any) -> bool:
     """Pre-deref structural check of the fields COMMON to every kind: an entry
-    must carry a string description, a string ``kind``, a valid ``access``
-    level, and an input_schema dict with a type and a properties map.
-    ``always_enabled`` and ``establishes_session`` are optional but, if present,
-    must be bools. Kind-specific fields (e.g. ``handler`` for python,
-    ``scope``/``result``/``render`` for bc_query) are validated per-kind."""
+    must carry a string description, a string ``kind``, and an input_schema
+    dict with a type and a properties map. ``enabled`` and
+    ``establishes_session`` are optional but, if present, must be bools.
+    Kind-specific fields (e.g. ``handler`` for python, ``scope``/``result``/
+    ``render`` for bc_query) are validated per-kind."""
     return (
         isinstance(entry, dict)
         and isinstance(entry.get("description"), str)
@@ -249,9 +241,7 @@ def _valid_spec_entry(entry: Any) -> bool:
         and isinstance(entry["input_schema"].get("properties"), dict)
         and "type" in entry["input_schema"]
         and isinstance(entry.get("kind"), str)
-        and isinstance(entry.get("access"), str)
-        and entry.get("access") in _ACCESS_LEVELS
-        and ("always_enabled" not in entry or isinstance(entry["always_enabled"], bool))
+        and ("enabled" not in entry or isinstance(entry["enabled"], bool))
         and ("establishes_session" not in entry or isinstance(entry["establishes_session"], bool))
     )
 
@@ -290,12 +280,6 @@ def _validate_preferred_fields(raw: Any) -> dict[str, list[str]]:
     return result
 
 
-# Access levels a spec entry may declare. ``read`` is always available;
-# ``write`` / ``delete`` are gated by SIEBEL_ALLOW_WRITE / SIEBEL_ALLOW_DELETE;
-# ``external`` (tools that send free text to an outside service, e.g. web
-# search) is gated by SIEBEL_ALLOW_EXTERNAL. All three gates default off.
-_ACCESS_LEVELS: set[str] = {"read", "write", "delete", "external"}
-
 # Handler references may only name modules inside this package — the resolver
 # rejects anything outside it so a spec can't pull in arbitrary code.
 _ALLOWED_HANDLER_PKG = "mcp_siebel.handlers"
@@ -304,11 +288,11 @@ _ALLOWED_HANDLER_PKG = "mcp_siebel.handlers"
 # --- Kind registry ---------------------------------------------------------
 #
 # Each kind declares its executor (assembled once at load time into the
-# ToolHandler ToolRegistry.call invokes), the spec options it requires/allows,
-# and the access levels it permits. Kind-specific options are validated at load
-# time; any violation is a _SpecError (fatal on first load, keep-last-valid on
-# reload). The ``python`` kind is the escape hatch for tools with real custom
-# logic; generic executors live under ``executors/`` and register here.
+# ToolHandler ToolRegistry.call invokes) and the spec options it
+# requires/allows. Kind-specific options are validated at load time; any
+# violation is a _SpecError (fatal on first load, keep-last-valid on reload).
+# The ``python`` kind is the escape hatch for tools with real custom logic;
+# generic executors live under ``executors/`` and register here.
 
 
 def _validate_python(entry: dict[str, Any], name: str, schema: dict[str, Any]) -> None:
@@ -330,7 +314,6 @@ def _assemble_python(entry: dict[str, Any], name: str) -> ToolHandler:
 _KINDS: dict[str, _KindSpec] = {
     "python": _KindSpec(
         name="python",
-        allowed_access=frozenset({"read", "write", "delete", "external"}),
         allowed_options=frozenset({"handler"}),
         required_options=frozenset({"handler"}),
         validate=_validate_python,
@@ -430,15 +413,6 @@ class ToolRegistry:
         # first good load a reload failure is non-fatal (log + keep last valid).
         self._first_load: bool = True
         self._reload_if_changed()
-        # Log once at startup which access levels are enabled — a deployer who
-        # forgets to flip a gate hears it here, not from a hidden/refused tool
-        # later. ``read`` is always on; the other three follow their flags.
-        log.info(
-            "Access gates: read=on, write=%s, delete=%s, external=%s",
-            "on" if self.settings.allow_write else "off",
-            "on" if self.settings.allow_delete else "off",
-            "on" if self.settings.allow_external else "off",
-        )
 
     @property
     def session_tool_name(self) -> str:
@@ -527,12 +501,6 @@ class ToolRegistry:
                 raise _SpecError(f"$ref error in {name!r}: {exc}") from exc
             if not _valid_resolved_schema(schema):
                 raise _SpecError(f"invalid resolved schema for {name!r}")
-            access = entry["access"]
-            if access not in kind_spec.allowed_access:
-                raise _SpecError(
-                    f"kind {kind!r} permits access {sorted(kind_spec.allowed_access)} "
-                    f"(entry {name!r} has access {access!r})"
-                )
             # Kind-specific option validation (raises _SpecError naming the rule).
             kind_spec.validate(entry, name, schema)
             # Bind the executor once; the returned callable is the single handler
@@ -541,27 +509,17 @@ class ToolRegistry:
                 handler = kind_spec.assemble(entry, name)
             except _SpecError as exc:
                 raise _SpecError(f"{kind} error in {name!r}: {exc}") from exc
-            always_enabled = bool(entry.get("always_enabled", False))
-            # always_enabled exempts a tool from SIEBEL_DISABLED_TOOLS only — it
-            # must never bypass the access gate, so it is only permitted on a
-            # read tool (the auth-establishment tool is the one that matters).
-            if always_enabled and access != "read":
-                raise _SpecError(
-                    f"always_enabled is only allowed with access 'read' "
-                    f"(entry {name!r} has access {access!r})"
-                )
             built[name] = ToolSpec(
                 name=name,
                 description=entry["description"],
                 input_schema=schema,
                 handler=handler,
-                access=access,
-                always_enabled=always_enabled,
+                enabled=bool(entry.get("enabled", True)),
                 establishes_session=bool(entry.get("establishes_session", False)),
             )
-        # Exactly one entry establishes a session; it must be always_enabled and
-        # access "read". The transports read its name from session_tool_name, so
-        # this invariant is what lets them avoid hard-coding a tool name.
+        # Exactly one entry establishes a session; it must be enabled. The
+        # transports read its name from session_tool_name, so this invariant is
+        # what lets them avoid hard-coding a tool name.
         session_tools = [n for n, t in built.items() if t.establishes_session]
         if len(session_tools) != 1:
             raise _SpecError(
@@ -569,30 +527,26 @@ class ToolRegistry:
             )
         session_name = session_tools[0]
         session_spec = built[session_name]
-        if not session_spec.always_enabled:
-            raise _SpecError(f"establishes_session tool {session_name!r} must be always_enabled")
-        if session_spec.access != "read":
-            raise _SpecError(f"establishes_session tool {session_name!r} must be access 'read'")
+        if not session_spec.enabled:
+            raise _SpecError(f"establishes_session tool {session_name!r} must be enabled")
         return built, preferred_fields, session_name
 
     def _exposed_tools(self, built: dict[str, ToolSpec]) -> list[dict[str, Any]]:
-        """The filtered tool list clients see via ``list_tools()``: access-gated
-        and with SIEBEL_DISABLED_TOOLS applied (always_enabled tools exempt).
-        Computed at snapshot build time so ``list_tools()`` is a single
-        reference read and the content hash reflects exactly what is exposed."""
-        disabled = {name.lower() for name in self.settings.disabled_tools}
+        """The filtered tool list clients see via ``list_tools()``: disabled
+        (``enabled: false``) tools dropped. Computed at snapshot build time so
+        ``list_tools()`` is a single reference read and the content hash
+        reflects exactly what is exposed."""
         return [
             {"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
             for tool in built.values()
-            if self._access_enabled(tool)
-            and (tool.always_enabled or tool.name.lower() not in disabled)
+            if tool.enabled
         ]
 
     @staticmethod
     def _content_hash(exposed: list[dict[str, Any]]) -> str:
         """Stable SHA-256 of the exposed tool list (canonical JSON). Changes only
         when a client-visible tool's name/description/input_schema changes — so a
-        spec edit that only touches a gated-off tool is not advertised as a change."""
+        spec edit that only touches a disabled tool is not advertised as a change."""
         return hashlib.sha256(json.dumps(exposed, sort_keys=True).encode("utf-8")).hexdigest()
 
     def _reload_if_changed(self) -> None:
@@ -659,7 +613,6 @@ class ToolRegistry:
             if content_changed:
                 changed_snapshot = snapshot
             log.info("Loaded %d tool specs from %s (version %d)", len(built), self._spec_path, new_version)
-            self._warn_disabled_always_enabled(built)
 
         # Notify subscribers outside the lock so a slow callback can't block a
         # list/call and the lock never re-enters via callback code.
@@ -706,34 +659,6 @@ class ToolRegistry:
             self._subscribers.append(callback)
         return _unsubscribe
 
-    def _warn_disabled_always_enabled(self, built: dict[str, ToolSpec]) -> None:
-        """Log a clear warning for every always-enabled tool that
-        SIEBEL_DISABLED_TOOLS tried to disable — the filter ignores those
-        entries, so the deployer hears about the misconfiguration instead of
-        silently getting the tool back."""
-        disabled = {name.lower() for name in self.settings.disabled_tools}
-        for name, spec in built.items():
-            if spec.always_enabled and name.lower() in disabled:
-                log.warning(
-                    "SIEBEL_DISABLED_TOOLS lists %r, but the spec marks it always_enabled — "
-                    "ignored (always_enabled tools cannot be disabled).",
-                    name,
-                )
-
-    def _access_enabled(self, tool: ToolSpec) -> bool:
-        """Whether ``tool``'s access level is currently permitted by the
-        SIEBEL_ALLOW_WRITE / SIEBEL_ALLOW_DELETE / SIEBEL_ALLOW_EXTERNAL flags.
-        ``read`` is always on; ``write`` / ``delete`` / ``external`` are off by
-        default (read-only server, and no data leaves for an outside service
-        without an explicit opt-in)."""
-        if tool.access == "write":
-            return bool(self.settings.allow_write)
-        if tool.access == "delete":
-            return bool(self.settings.allow_delete)
-        if tool.access == "external":
-            return bool(self.settings.allow_external)
-        return True
-
     def list_tools(self) -> list[dict[str, Any]]:
         self._reload_if_changed()
         # Read the snapshot reference exactly once; the exposed list is
@@ -753,17 +678,7 @@ class ToolRegistry:
         tool = snap.tools.get(name)
         if tool is None:
             return _error(f'Unknown tool "{name}".')
-        # The access gate takes precedence: a write/delete/external tool is
-        # refused when its flag is off, regardless of always_enabled (which only
-        # exempts the SIEBEL_DISABLED_TOOLS list, never the access gate).
-        if not self._access_enabled(tool):
-            flag = {
-                "write": "allow_write",
-                "delete": "allow_delete",
-                "external": "allow_external",
-            }.get(tool.access, "allow_write/allow_delete/allow_external")
-            return _error(f'Tool "{name}" is disabled (requires {flag}).')
-        if not tool.always_enabled and name.lower() in {item.lower() for item in self.settings.disabled_tools}:
+        if not tool.enabled:
             return _error(f'Tool "{name}" is disabled.')
         log.debug("Calling tool %s with args %s", name, list(arguments.keys()))
         try:

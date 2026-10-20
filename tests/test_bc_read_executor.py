@@ -63,12 +63,11 @@ def _bcr(
     bind: dict[str, object] | None = None,
     fallback: str | None = None,
     handler: str | None = None,
-    access: str = "read",
+    enabled: bool | None = None,
 ) -> dict[str, object]:
     entry: dict[str, object] = {
         "description": "fixture bc_read tool",
         "kind": "bc_read",
-        "access": access,
         "mode": mode,
         "render": render,
         "input_schema": {"type": "object", "properties": props or {}},
@@ -81,6 +80,8 @@ def _bcr(
         entry["fallback"] = fallback
     if handler is not None:
         entry["handler"] = handler
+    if enabled is not None:
+        entry["enabled"] = enabled
     return entry
 
 
@@ -88,9 +89,8 @@ def _reg(
     tmp_path,
     extra: dict[str, dict[str, object]],
     preferred_fields: object | None = None,
-    **settings_overrides,
 ) -> ToolRegistry:
-    settings = AppSettings(**settings_overrides)
+    settings = AppSettings()
     settings.tools_spec_path = _spec_path(tmp_path, extra, preferred_fields)
     return ToolRegistry(settings)
 
@@ -117,11 +117,6 @@ def _query_result(record: dict[str, str]) -> SiebelQueryResult:
 def test_bc_read_forbids_handler(tmp_path) -> None:
     with pytest.raises(_SpecError, match="handler"):
         _reg(tmp_path, {"x": _bcr(handler="mcp_siebel.handlers.records:_aggregate_data")})
-
-
-def test_bc_read_access_must_be_read(tmp_path) -> None:
-    with pytest.raises(_SpecError, match="permits access"):
-        _reg(tmp_path, {"x": _bcr(access="write")})
 
 
 def test_bc_read_missing_mode_rejected(tmp_path) -> None:

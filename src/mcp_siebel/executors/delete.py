@@ -88,7 +88,6 @@ def _assemble_bc_delete(entry: dict[str, Any], name: str) -> Any:
 
 DELETE_KIND: _KindSpec = _KindSpec(
     name="bc_delete",
-    allowed_access=frozenset({"delete"}),
     allowed_options=_DELETE_ALLOWED_OPTIONS,
     required_options=_DELETE_REQUIRED_OPTIONS,
     validate=_validate_bc_delete,

@@ -178,7 +178,6 @@ def _assemble_bc_read(entry: dict[str, Any], name: str) -> Any:
 
 BC_READ_KIND: _KindSpec = _KindSpec(
     name="bc_read",
-    allowed_access=frozenset({"read"}),
     allowed_options=_BC_READ_ALLOWED_OPTIONS,
     required_options=_BC_READ_REQUIRED_OPTIONS,
     validate=_validate_bc_read,

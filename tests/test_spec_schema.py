@@ -6,8 +6,6 @@ loader's runtime validation remains the source of truth. This test guards the
 hand-maintained schema against drift from the code:
 
 * every kind in ``_KINDS`` appears in the schema's ``kind`` enum;
-* every access level the loader accepts (``_ACCESS_LEVELS``) appears in the
-  schema's ``access`` enum;
 * for each kind, every allowed option appears as a property in that kind's
   ``if/then`` block, and every required option is in its ``required`` array;
 * every renderer in ``RENDERERS`` appears in some per-kind render enum;
@@ -23,7 +21,7 @@ import jsonschema
 import pytest
 
 from mcp_siebel.renderers import RENDERERS
-from mcp_siebel.tools import _ACCESS_LEVELS, _KINDS
+from mcp_siebel.tools import _KINDS
 
 
 def _load_schema() -> dict[str, object]:
@@ -67,10 +65,17 @@ def test_schema_kind_enum_matches_registry() -> None:
     assert kind_enum == set(_KINDS), f"schema kinds {sorted(kind_enum)} != registry {sorted(_KINDS)}"
 
 
-def test_schema_access_enum_matches_loader() -> None:
+def test_schema_declares_enabled_property() -> None:
     schema = _load_schema()
-    access_enum = set(schema["$defs"]["accessEnum"]["enum"])  # type: ignore[index]
-    assert access_enum == _ACCESS_LEVELS, f"schema access {sorted(access_enum)} != loader {sorted(_ACCESS_LEVELS)}"
+    tool_entry = schema["$defs"]["toolEntry"]  # type: ignore[index]
+    props = tool_entry["properties"]  # type: ignore[index]
+    enabled = props["enabled"]  # type: ignore[index]
+    assert enabled["type"] == "boolean"
+    assert enabled["default"] is True
+    # access and always_enabled are gone — enabled is the only on/off switch.
+    assert "access" not in props
+    assert "always_enabled" not in props
+    assert "access" not in tool_entry.get("required", [])  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize("kind_name", sorted(_KINDS))

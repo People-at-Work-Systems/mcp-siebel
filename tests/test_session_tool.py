@@ -22,7 +22,8 @@ from mcp_siebel.tools import ToolRegistry
 
 def _spec_with_session_renamed(tmp_path, new_name: str) -> str:
     """The bundled spec with the session tool renamed to ``new_name`` (its
-    handler, establishes_session, always_enabled and access are preserved)."""
+    handler and establishes_session are preserved; the entry is enabled by
+    default)."""
     spec = json.loads(files("mcp_siebel").joinpath("specs", "tool_specs.json").read_text(encoding="utf-8"))
     tools = spec["tools"]
     tools[new_name] = tools.pop("authenticate")

@@ -43,21 +43,24 @@ def _entry(
     *,
     kind: str = "python",
     handler: str = "mcp_siebel.handlers.records:_aggregate_data",
-    access: str = "read",
+    enabled: bool | None = None,
 ) -> dict[str, object]:
     """A minimal valid spec entry. The default handler points at a real,
     resolvable function so an entry is valid out of the box; tests that need a
-    bad kind/handler or a non-read access level override those kwargs."""
+    bad kind/handler or a disabled tool override those kwargs. ``enabled`` is
+    omitted when None (default true); pass False to hide the tool."""
     schema: dict[str, object] = {"type": "object", "properties": props or {}}
     if required:
         schema["required"] = required
-    return {
+    entry: dict[str, object] = {
         "description": description,
         "kind": kind,
         "handler": handler,
-        "access": access,
         "input_schema": schema,
     }
+    if enabled is not None:
+        entry["enabled"] = enabled
+    return entry
 
 
 def _write_spec(path, tools: dict[str, object], defs: dict[str, object] | None = None) -> None:
@@ -89,20 +92,33 @@ def _full_valid_spec() -> dict[str, dict[str, object]]:
 
 
 def test_spec_entries_have_known_kind_and_valid_options() -> None:
-    """Every bundled entry declares a known kind whose allowed-access/options
-    accept it, and the registry loads them all."""
+    """Every bundled entry declares a known kind whose allowed options accept
+    it, and the registry loads them all. The 7 write/delete/external tools are
+    ``enabled: false`` in the bundled spec (read-only by default); every other
+    tool omits ``enabled`` (default true)."""
+    disabled_expected = {
+        "create_child_record",
+        "create_record",
+        "create_record_json",
+        "update_record",
+        "upload_attachment",
+        "delete_record",
+        "web_search",
+    }
     tools = _bundled_tools()
     for name, entry in tools.items():
         kind = entry["kind"]
         assert kind in _KINDS, f"{name}: unknown kind {kind!r}"
-        kind_spec = _KINDS[kind]
-        assert entry["access"] in kind_spec.allowed_access, f"{name}: access not permitted by kind"
         # python entries resolve a real handler; bc_query entries have none.
         if kind == "python":
             assert entry["handler"].startswith("mcp_siebel.handlers."), f"{name}: handler outside handlers pkg"
             assert callable(_resolve_handler(entry["handler"])), f"{name}: handler not callable"
         else:
             assert "handler" not in entry, f"{name}: non-python kind must not declare a handler"
+        if name in disabled_expected:
+            assert entry.get("enabled") is False, f"{name}: expected enabled: false"
+        else:
+            assert "enabled" not in entry, f"{name}: expected no enabled key (default true)"
     reg = ToolRegistry(AppSettings())
     assert set(reg._tools) == set(tools), "registry didn't load every bundled tool"
 
@@ -118,7 +134,7 @@ def test_spec_refs_are_inlined() -> None:
     assert props["page_size"]["type"] == "integer"
     assert props["fields"]["type"] == "array"
     assert props["fields"].get("items") == {"type": "string"}
-    assert "NEVER pass placeholder" in props["fields"]["description"]
+    assert "Never pass placeholders" in props["fields"]["description"]
 
 
 def test_spec_required_preserved() -> None:
@@ -332,7 +348,7 @@ def test_spec_duplicate_tool_name_rejected(tmp_path) -> None:
 
 # ---------------------------------------------------------------------------
 # Session tool — exactly one entry marks establishes_session; it must be
-# always_enabled and access "read". (Zero/two -> load error.)
+# enabled. (Zero/two -> load error.)
 # ---------------------------------------------------------------------------
 
 
@@ -350,21 +366,12 @@ def test_spec_two_session_tools_rejected(tmp_path) -> None:
         _registry_with_spec(tmp_path, spec)
 
 
-def test_spec_session_tool_must_be_always_enabled(tmp_path) -> None:
+def test_spec_session_tool_must_be_enabled(tmp_path) -> None:
+    """The session tool must be enabled — disabling it would brick the server
+    (no way to establish a session), so the loader rejects it at load time."""
     spec = _full_valid_spec()
-    auth = {k: v for k, v in spec["authenticate"].items() if k != "always_enabled"}
-    auth["establishes_session"] = True
-    spec["authenticate"] = auth
-    with pytest.raises(_SpecError, match="must be always_enabled"):
-        _registry_with_spec(tmp_path, spec)
-
-
-def test_spec_session_tool_must_be_read_access(tmp_path) -> None:
-    """The session tool must be access 'read' (it is always_enabled, and
-    always_enabled is only allowed with read — so this is rejected at load)."""
-    spec = _full_valid_spec()
-    spec["authenticate"] = {**spec["authenticate"], "access": "write"}
-    with pytest.raises(_SpecError, match="always_enabled is only allowed with access 'read'"):
+    spec["authenticate"] = {**spec["authenticate"], "enabled": False}
+    with pytest.raises(_SpecError, match="must be enabled"):
         _registry_with_spec(tmp_path, spec)
 
 

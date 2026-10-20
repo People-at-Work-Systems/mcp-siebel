@@ -6,7 +6,7 @@
       "type": "string"
     },
     "business_object": {
-      "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Call list_business_objects to see all available names.",
+      "description": "Siebel Business Object name, e.g. 'Account', 'Contact', 'Opportunity'. Never guess it: call list_business_objects if you are unsure of the exact name.",
       "type": "string"
     },
     "child_business_component": {
@@ -14,18 +14,18 @@
       "type": "string"
     },
     "data": {
-      "description": "JSON object of field names to values for create/update, e.g. {\"Name\": \"Acme\"}.",
+      "description": "JSON object of field names to values, e.g. {\"Name\": \"Acme\"}. Use only field names returned by describe_business_object for this Business Component.",
       "type": "object"
     },
     "fields": {
-      "description": "List of REAL Siebel field names to return, e.g. [\"Name\", \"Status\"]. Look the valid names up with describe_business_object first. Omit to return the default field set. NEVER pass placeholders such as '<?>'; if you are unsure of the field names, call describe_business_object before querying.",
+      "description": "List of Siebel field names to return, e.g. [\"Name\", \"Status\"]. Use only names returned by describe_business_object for this Business Component; never invent names from general Siebel knowledge. Omit to get the default field set. Never pass placeholders such as '<?>'. If the result contains only Id values, at least one name was invalid: call describe_business_object and retry with valid names.",
       "items": {
         "type": "string"
       },
       "type": "array"
     },
     "id": {
-      "description": "Siebel row Id of the record, e.g. '1-5GZE'.",
+      "description": "Siebel row Id of the record, e.g. '1-5GZE'. Take it from a previous tool result; never show it to the user.",
       "type": "string"
     },
     "offset": {
@@ -37,11 +37,11 @@
       "type": "integer"
     },
     "parent_id": {
-      "description": "Siebel row Id of the parent record, e.g. '1-5GZE'.",
+      "description": "Siebel row Id of the parent record, e.g. '1-5GZE'. Take it from a previous tool result; never show it to the user.",
       "type": "string"
     },
     "searchspec": {
-      "description": "Optional Siebel search expression, e.g. \"[Name] LIKE 'A*'\" or '[Id] = \"1-5GZE\"'. Omit to return all rows (paged).",
+      "description": "Optional Siebel search expression, e.g. \"[Name] LIKE 'A*'\" or \"[Id] = '1-5GZE'\". Put values in single quotes and double any single quote inside a value ('O''Brien'). Call get_query_syntax before building your first searchspec. Omit to return all rows (paged).",
       "type": "string"
     },
     "sort_spec": {
@@ -91,7 +91,7 @@
       "Sales Stage",
       "Primary Revenue Amount",
       "Primary Revenue Close Date",
-      "Win Probability",
+      "Primary Revenue Win Probability",
       "Primary Organization",
       "Sales Method",
       "Description"
@@ -112,9 +112,8 @@
   },
   "tools": {
     "aggregate_data": {
-      "description": "Compute sum, avg, min, max, or count across all matching records.",
+      "description": "Compute an exact sum, avg, min, max or count over all records matching an optional searchspec, server-side. Use this for every numeric calculation over Siebel data; never compute, estimate or reuse such numbers yourself. 'field' must be a numeric field returned by describe_business_object.",
       "kind": "python",
-      "access": "read",
       "handler": "mcp_siebel.handlers.records:_aggregate_data",
       "input_schema": {
         "properties": {
@@ -125,7 +124,7 @@
             "$ref": "#/$defs/business_object"
           },
           "field": {
-            "description": "A real Siebel field name to aggregate over (from describe_business_object).",
+            "description": "A real numeric Siebel field name to aggregate over (from describe_business_object).",
             "type": "string"
           },
           "operation": {
@@ -145,10 +144,8 @@
       }
     },
     "authenticate": {
-      "description": "Authenticate or register a Siebel user for this session.",
+      "description": "Start a Siebel session for the user. Call this before any other Siebel tool and pass the returned session_id to every subsequent tool call in the conversation. If a tool reports an authentication or session error, call this again and retry the operation.",
       "kind": "python",
-      "access": "read",
-      "always_enabled": true,
       "establishes_session": true,
       "handler": "mcp_siebel.handlers.auth:_authenticate",
       "input_schema": {
@@ -170,9 +167,8 @@
       }
     },
     "calculate_date": {
-      "description": "Resolve a natural-language date expression to MM/DD/YYYY.",
+      "description": "Resolve a natural-language date ('today', 'next Monday', 'end of quarter', 'in 30 days') to MM/DD/YYYY. Always call this before using a relative date in a searchspec or in create/update data; never calculate dates yourself.",
       "kind": "python",
-      "access": "read",
       "handler": "mcp_siebel.handlers.util:_calculate_date",
       "input_schema": {
         "properties": {
@@ -188,9 +184,8 @@
       }
     },
     "count_records": {
-      "description": "Count records matching an optional searchspec.",
+      "description": "Count records matching an optional searchspec without fetching them. Use this for every 'how many' question and report the number exactly as returned; never count rows yourself or reuse an earlier number. A count of 0 can also mean the user has no visibility on those records.",
       "kind": "bc_query",
-      "access": "read",
       "render": "count_prose",
       "result": "count",
       "scope": "root",
@@ -213,9 +208,9 @@
       }
     },
     "create_child_record": {
-      "description": "Create child record(s) under a parent record.",
+      "description": "Create a child record under a parent, e.g. an Activity under an Opportunity. First call describe_business_object with the parent Business Object and the child Business Component, and use only field names it returns in 'data'. Resolve relative dates with calculate_date. Confirm the values with the user before calling.",
       "kind": "bc_upsert",
-      "access": "write",
+      "enabled": false,
       "operation": "create",
       "render": "child_create_prose",
       "scope": "child",
@@ -247,9 +242,9 @@
       }
     },
     "create_record": {
-      "description": "Create a new Siebel record.",
+      "description": "Create a new Siebel record. Before calling: run describe_business_object for valid field names and describe_repository for required fields and their Pre/Post Default Values. Put only fields the user gave you, plus required fields without a default, into 'data'; do not ask the user for fields Siebel fills by default. Resolve relative dates with calculate_date. Confirm the values with the user before creating.",
       "kind": "bc_upsert",
-      "access": "write",
+      "enabled": false,
       "operation": "create",
       "render": "create_prose",
       "scope": "root",
@@ -273,9 +268,9 @@
       }
     },
     "create_record_json": {
-      "description": "Create a new Siebel record and return it as structured JSON (the new Id is in the result).",
+      "description": "Same as create_record, but returns the new record as structured JSON (the new Id is in the result) for programmatic consumers. The same rules apply: describe_business_object and describe_repository first, only confirmed field names, and confirm the values with the user before creating.",
       "kind": "bc_upsert",
-      "access": "write",
+      "enabled": false,
       "operation": "create",
       "render": "create_json",
       "scope": "root",
@@ -299,9 +294,9 @@
       }
     },
     "delete_record": {
-      "description": "Delete a Siebel record by Id.",
+      "description": "Permanently delete a Siebel record by Id. This cannot be undone. Only use it when the user explicitly asked to delete this record, and confirm the record with the user first (by name, not by Id).",
       "kind": "bc_delete",
-      "access": "delete",
+      "enabled": false,
       "render": "delete_prose",
       "input_schema": {
         "properties": {
@@ -323,9 +318,8 @@
       }
     },
     "describe_business_object": {
-      "description": "Get field schema for a Siebel Business Object/Component.",
+      "description": "Get the REST field list (names, types, required/read-only, length) of a Business Component. Call this before the first query, create or update on a Business Component, and use only the field names it returns in 'fields' and 'data'. For child records, call it with the parent Business Object and the child Business Component name: child BCs can expose different fields than the standalone BC. Fields that are missing here may still be valid in searchspec/sort_spec; check them with describe_repository.",
       "kind": "bc_describe",
-      "access": "read",
       "render": "describe_bc_prose",
       "source": "bc_descriptor",
       "input_schema": {
@@ -344,9 +338,8 @@
       }
     },
     "describe_business_object_json": {
-      "description": "REST data API field list for a BC as JSON \u2014 the navigator's result-list columns (reliable; no LOV types).",
+      "description": "Same REST field list as describe_business_object, as structured JSON for programmatic consumers (the CRM navigator's result-list columns; no LOV types). For answers to the user, use describe_business_object.",
       "kind": "bc_describe",
-      "access": "read",
       "render": "describe_bc_json",
       "source": "bc_descriptor",
       "input_schema": {
@@ -365,9 +358,8 @@
       }
     },
     "describe_repository": {
-      "description": "Query Siebel repository metadata for the full field list of a Business Component. Returns richer data than describe_business_object: pre/post default values, LOV picklist types, calculated field flags, join info, and fields that are valid in searchspec/sort_spec but not returned by the REST data API. Always call this when you need fields not listed by describe_business_object, before create/update to check required field defaults, or when unsure about a field name or picklist values.",
+      "description": "Query Siebel repository metadata for the full field list of a Business Component: pre/post default values, LOV picklist types, calculated field flags, join info, and fields that are valid in searchspec/sort_spec but not returned by the REST data API. Call this when you need a field not listed by describe_business_object, before create/update to check required fields and their defaults, and whenever you are unsure about a field name or picklist. Fields listed here but not by describe_business_object may be used only in searchspec/sort_spec, never in 'fields'; tell the user such a field cannot be shown.",
       "kind": "bc_describe",
-      "access": "read",
       "render": "repository_prose",
       "source": "repository",
       "input_schema": {
@@ -386,9 +378,8 @@
       }
     },
     "describe_repository_json": {
-      "description": "Field metadata for a BC as JSON (name, type, LOV type, flags) \u2014 for the navigator's filter chips.",
+      "description": "Repository field metadata for a Business Component as structured JSON (name, type, LOV type, flags), for programmatic consumers such as the navigator's filter chips. For answers to the user, use describe_repository.",
       "kind": "bc_describe",
-      "access": "read",
       "render": "repository_json",
       "source": "repository",
       "input_schema": {
@@ -407,9 +398,8 @@
       }
     },
     "get_list_of_values": {
-      "description": "Fetch Siebel List of Values for LOV type codes.",
+      "description": "Fetch the allowed values of Siebel picklists by LOV type code, e.g. 'ACCOUNT_STATUS'. Find a field's LOV type with describe_repository. Use this before filtering on or writing a picklist field, so that you use a valid value.",
       "kind": "python",
-      "access": "read",
       "handler": "mcp_siebel.handlers.metadata:_get_list_of_values",
       "input_schema": {
         "properties": {
@@ -428,16 +418,18 @@
       }
     },
     "get_query_syntax": {
-      "description": "Return Siebel Query Language syntax reference.",
+      "description": "Reference for Siebel search expressions (searchspec). Call this before building your first searchspec in a conversation.",
       "kind": "static_text",
-      "access": "read",
       "text": [
-        "Use <> for not equal; never use !=.",
         "Field names go in square brackets: [Status] = 'Open'.",
-        "Use LIKE with * wildcards: [Name] LIKE 'Acme*'.",
-        "Combine with AND/OR and parenthesize compound expressions.",
-        "Dates may use Today(), Timestamp(), and arithmetic such as Today()-30.",
-        "Siebel may return 404 when a query has no records."
+        "Put string and date values in single quotes; double a single quote inside a value: [Name] = 'O''Brien'.",
+        "Comparison operators: =, <>, <, <=, >, >=. Never use !=.",
+        "Wildcards with LIKE: * matches any characters, ? matches one character: [Name] LIKE 'Acme*'.",
+        "Case-insensitive matching: [Name] ~LIKE 'acme*'.",
+        "Empty values: [Field] IS NULL, [Field] IS NOT NULL.",
+        "Combine conditions with AND / OR / NOT and use parentheses: ([Status] = 'Open' OR [Status] = 'Pending') AND [Priority] = 'High'.",
+        "Dates use MM/DD/YYYY: [Created] >= '01/01/2026'. Resolve relative dates with calculate_date first; Today() and arithmetic such as Today()-30 also work.",
+        "Fields listed only by describe_repository may be used in a searchspec or sort_spec, but not in 'fields'."
       ],
       "input_schema": {
         "properties": {
@@ -450,9 +442,8 @@
       }
     },
     "get_record": {
-      "description": "Get a single Siebel record by Id.",
+      "description": "Get one record by its Id (taken from a previous query). Present it to the user as a readable list of business fields; leave out Id and '* Id' fields and internal flags. Pass 'fields' (names from describe_business_object) for a focused result.",
       "kind": "bc_read",
-      "access": "read",
       "fallback": "curated_query",
       "mode": "single",
       "render": "record_prose",
@@ -479,9 +470,8 @@
       }
     },
     "get_record_with_children": {
-      "description": "Get one record with embedded child records.",
+      "description": "Get one record by Id together with all its child records in one call. Present the parent fields as a list and each set of child records as a Markdown table, without Id fields.",
       "kind": "bc_read",
-      "access": "read",
       "mode": "with_children",
       "render": "record_hierarchical_prose",
       "input_schema": {
@@ -504,9 +494,8 @@
       }
     },
     "list_business_objects": {
-      "description": "List all available Siebel Business Objects.",
+      "description": "List all Siebel Business Objects available through the REST API. Call this when you do not know the exact Business Object name; never guess it.",
       "kind": "bc_describe",
-      "access": "read",
       "render": "list_prose",
       "source": "business_objects",
       "input_schema": {
@@ -515,9 +504,8 @@
       }
     },
     "list_business_objects_json": {
-      "description": "List all available Siebel Business Objects as structured JSON (for the CRM navigator).",
+      "description": "Same as list_business_objects, as structured JSON for programmatic consumers such as the CRM navigator. For answers to the user, use list_business_objects.",
       "kind": "bc_describe",
-      "access": "read",
       "render": "list_json",
       "source": "business_objects",
       "input_schema": {
@@ -526,9 +514,8 @@
       }
     },
     "query_child_records": {
-      "description": "Query child records under a parent record.",
+      "description": "Query child records under one parent record, e.g. the Contacts of an Account. Before the first call, run describe_business_object with the parent Business Object and the child Business Component: child BCs can expose different fields than the standalone BC, so never reuse a standalone field list. For attachments, use the matching attachment BC, e.g. 'Account Attachment'. If the child BC is not linked under this Business Object, the call fails; tell the user that this relationship cannot be queried. Present results as a Markdown table without Id columns.",
       "kind": "bc_query",
-      "access": "read",
       "render": "child_query_prose",
       "result": "records",
       "scope": "child",
@@ -571,9 +558,8 @@
       }
     },
     "query_child_records_json": {
-      "description": "Query child records and return structured JSON.",
+      "description": "Same as query_child_records, returning structured JSON for programmatic consumers. The same field rules apply (describe_business_object with parent BO and child BC first). For answers to the user, prefer query_child_records.",
       "kind": "bc_query",
-      "access": "read",
       "render": "query_json",
       "result": "records",
       "scope": "child",
@@ -616,9 +602,8 @@
       }
     },
     "query_data": {
-      "description": "Query Siebel CRM data using a Siebel searchspec expression.",
+      "description": "Search records of a Business Component with a Siebel searchspec; returns readable text for answering the user. Before the first query on a Business Component, call describe_business_object and use only the field names it returns in 'fields'; call get_query_syntax before building a searchspec. Present several records as a Markdown table without Id columns. Results are paged: if there are more rows than returned, tell the user how many were shown out of the total. An empty result can also mean the user has no visibility on those records; say that no records were found.",
       "kind": "bc_query",
-      "access": "read",
       "render": "query_prose",
       "result": "records",
       "scope": "root",
@@ -653,9 +638,8 @@
       }
     },
     "query_records_json": {
-      "description": "Query records and return structured JSON.",
+      "description": "Same as query_data, returning structured JSON (items, totalCount, hasMore) for programmatic consumers or for paging through large result sets. The same field rules apply: describe_business_object first, only returned field names in 'fields'. 'childlinks' expands child BCs inline. For answers to the user, prefer query_data.",
       "kind": "bc_query",
-      "access": "read",
       "render": "query_json",
       "result": "records",
       "scope": "root",
@@ -696,10 +680,33 @@
         "type": "object"
       }
     },
+    "siebel_usage_guide": {
+      "description": "Working rules for this Siebel CRM server. Call this once at the start of a conversation, before your first Siebel query, and follow the rules it returns.",
+      "kind": "static_text",
+      "text": [
+        "Fetch every CRM fact with a tool call in the current turn; never answer from earlier results or from memory.",
+        "Field names differ between Siebel installations. Before querying, creating or updating a Business Component, call describe_business_object and use only the field names it returns in 'fields' and 'data'.",
+        "Fields that exist only in describe_repository may be used in searchspec/sort_spec but not in 'fields'. If you filter or sort by such a field, tell the user it cannot be shown.",
+        "Call get_query_syntax before building your first searchspec.",
+        "If a query returns only Id values, some requested field names were invalid: call describe_business_object and retry with valid names.",
+        "An empty result can also mean the current user has no visibility on those records. Say that no records were found; do not claim that none exist.",
+        "Use count_records for counts and aggregate_data for sums, averages, minimums and maximums. Never compute or estimate numbers yourself, and never reuse a number from an earlier turn.",
+        "If a list was returned with a page limit, report how many rows were shown versus the total count.",
+        "Use calculate_date to resolve relative dates before using them in a searchspec or in create/update data.",
+        "Present a single record as a readable list of business fields and several records as a Markdown table.",
+        "Never show Id values or '* Id' fields, HTTP status codes or Siebel error codes (SBL-...) to the user. Keep Id values for follow-up tool calls.",
+        "On errors, tell the user the data could not be retrieved right now; if only part of a request failed, show what succeeded.",
+        "Write tools (create, update, delete, upload) change production data: confirm the exact values with the user before calling them, and only delete when the user explicitly asked for it."
+      ],
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      }
+    },
     "update_record": {
-      "description": "Update an existing Siebel record by Id.",
+      "description": "Update an existing Siebel record by Id. Put only the fields to change into 'data', using names from describe_business_object; resolve relative dates with calculate_date. Confirm the change with the user before calling.",
       "kind": "bc_upsert",
-      "access": "write",
+      "enabled": false,
       "operation": "update",
       "render": "update_prose",
       "scope": "root",
@@ -727,9 +734,9 @@
       }
     },
     "upload_attachment": {
-      "description": "Upload a base64 file attachment to a Siebel record.",
+      "description": "Upload a base64-encoded file as an attachment to a Siebel record, using the record's attachment BC, e.g. 'Account Attachment'. Confirm with the user before uploading. To list existing attachments, use query_child_records with the same attachment BC.",
       "kind": "python",
-      "access": "write",
+      "enabled": false,
       "handler": "mcp_siebel.handlers.children:_upload_attachment",
       "input_schema": {
         "properties": {
@@ -775,9 +782,9 @@
       }
     },
     "web_search": {
-      "description": "Search the web using Brave Search when configured.",
+      "description": "Search the public web (Brave Search) for company news, market information or public background. Use it when the user asks for web information. Never put customer data from Siebel into the query beyond what the user explicitly asked you to search for.",
       "kind": "python",
-      "access": "external",
+      "enabled": false,
       "handler": "mcp_siebel.handlers.util:_web_search",
       "input_schema": {
         "properties": {

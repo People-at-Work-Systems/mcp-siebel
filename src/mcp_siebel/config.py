@@ -52,17 +52,6 @@ class AppSettings(BaseSettings):
     # -- Demo mode ------------------------------------------------------------
     demo_enabled: bool = False
 
-    # -- Access gates (default off = read-only) -------------------------------
-    # When False, tools whose spec entry has access "write" / "delete" /
-    # "external" are hidden by ToolRegistry.list_tools() and refused by call().
-    # The per-tool access level lives in the spec; these flags are the on/off
-    # switch. ``external`` covers tools that send free text to an outside
-    # service (e.g. web search) — off by default so a bank deployment can't
-    # leak customer data into a search query without an explicit opt-in.
-    allow_write: bool = False
-    allow_delete: bool = False
-    allow_external: bool = False
-
     # -- Session lifetime -----------------------------------------------------
     # Absolute per-session TTL in ms. A session expires this long after its
     # creation (mirrors the fixed Siebel REST session lifetime). Must stay
@@ -71,10 +60,6 @@ class AppSettings(BaseSettings):
     session_timeout_ms: int = Field(default=30 * 60 * 1000, ge=60_000)
 
     # -- Tools ----------------------------------------------------------------
-    # Kept as str so pydantic-settings never attempts JSON-decoding.
-    # Use the disabled_tools property to get the parsed list.
-    disabled_tools_raw: str = Field(default="", alias="SIEBEL_DISABLED_TOOLS")
-
     # Path to an external tool-spec JSON file (name/description/inputSchema per
     # tool). Empty = use the bundled mcp_siebel/specs/tool_specs.json. The
     # registry hot-reloads this file by mtime, so edits take effect on the next
@@ -90,17 +75,6 @@ class AppSettings(BaseSettings):
     # modules are NOT watched — a code change still needs a restart; only the
     # JSON spec is hot-reloaded.
     tools_spec_watch: bool = Field(default=True, alias="SIEBEL_TOOLS_SPEC_WATCH")
-
-    @property
-    def disabled_tools(self) -> list[str]:
-        """The explicit SIEBEL_DISABLED_TOOLS list only.
-
-        Access gating (write/delete) is enforced by ToolRegistry from each
-        spec entry's ``access`` field against allow_write/allow_delete — it no
-        longer lives here, so a write tool added via JSON can't bypass the
-        read-only default. always_enabled tools are exempt from this list.
-        """
-        return [t.strip() for t in self.disabled_tools_raw.split(",") if t.strip()]
 
     # -- OAuth ----------------------------------------------------------------
     oauth_client_id: str = ""

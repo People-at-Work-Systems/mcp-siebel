@@ -172,7 +172,6 @@ def _assemble_bc_describe(entry: dict[str, Any], name: str) -> Any:
 
 DESCRIBE_KIND: _KindSpec = _KindSpec(
     name="bc_describe",
-    allowed_access=frozenset({"read"}),
     allowed_options=_DESCRIBE_ALLOWED_OPTIONS,
     required_options=_DESCRIBE_REQUIRED_OPTIONS,
     validate=_validate_bc_describe,

@@ -3,8 +3,8 @@ validation, ``bind``, ``allowed_fields``, and the runtime dispatch — exercised
 with test-only fixture specs (the bundled tools are migrated in a later commit).
 
 A fixture "JSON-only write tool" (bound BO/BC, ``allowed_fields``, ``create_json``
-render) proves such a tool is gated by ``allow_write`` with no framework code
-change — the gate keys off the spec entry's ``access``, not the kind.
+render) proves such a tool is gated by its ``enabled`` flag with no framework
+code change — the gate keys off the spec entry's ``enabled``, not the kind.
 """
 
 from __future__ import annotations
@@ -44,12 +44,11 @@ def _upsert(
     required: list[str] | None = None,
     bind: dict[str, object] | None = None,
     allowed_fields: list[str] | None = None,
-    access: str = "write",
+    enabled: bool | None = None,
 ) -> dict[str, object]:
     entry: dict[str, object] = {
         "description": "fixture bc_upsert tool",
         "kind": "bc_upsert",
-        "access": access,
         "operation": operation,
         "scope": scope,
         "render": render,
@@ -61,6 +60,8 @@ def _upsert(
         entry["bind"] = bind
     if allowed_fields is not None:
         entry["allowed_fields"] = allowed_fields
+    if enabled is not None:
+        entry["enabled"] = enabled
     return entry
 
 
@@ -70,12 +71,11 @@ def _delete(
     props: dict[str, object] | None = None,
     required: list[str] | None = None,
     bind: dict[str, object] | None = None,
-    access: str = "delete",
+    enabled: bool | None = None,
 ) -> dict[str, object]:
     entry: dict[str, object] = {
         "description": "fixture bc_delete tool",
         "kind": "bc_delete",
-        "access": access,
         "render": render,
         "input_schema": {"type": "object", "properties": props or {}},
     }
@@ -83,11 +83,13 @@ def _delete(
         entry["input_schema"]["required"] = required  # type: ignore[index]
     if bind is not None:
         entry["bind"] = bind
+    if enabled is not None:
+        entry["enabled"] = enabled
     return entry
 
 
-def _reg(tmp_path, extra: dict[str, dict[str, object]], **settings_overrides) -> ToolRegistry:
-    settings = AppSettings(**settings_overrides)
+def _reg(tmp_path, extra: dict[str, dict[str, object]]) -> ToolRegistry:
+    settings = AppSettings()
     settings.tools_spec_path = _spec_path(tmp_path, extra)
     return ToolRegistry(settings)
 
@@ -110,11 +112,6 @@ def _no_client_session() -> SessionContext:
 # ---------------------------------------------------------------------------
 # bc_upsert — load-time validation
 # ---------------------------------------------------------------------------
-
-
-def test_upsert_access_must_be_write(tmp_path) -> None:
-    with pytest.raises(_SpecError, match="permits access"):
-        _reg(tmp_path, {"x": _upsert(access="read")})
 
 
 def test_upsert_invalid_operation_rejected(tmp_path) -> None:
@@ -280,7 +277,9 @@ def test_upsert_bind_id_wrong_type_rejected(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# bc_upsert — a JSON-only write tool is gated by allow_write (no code change)
+# bc_upsert — a JSON-only write tool is gated by its enabled flag (no code
+# change). The fixture is disabled to cover the hidden/refused paths; the
+# listed test flips it to enabled.
 # ---------------------------------------------------------------------------
 
 
@@ -290,21 +289,23 @@ _JSON_ONLY_WRITE: dict[str, object] = _upsert(
     required=["data"],
     allowed_fields=["Name", "Status"],
     render="create_json",
+    enabled=False,
 )
 
 
-def test_json_only_write_tool_hidden_when_allow_write_off(tmp_path) -> None:
+def test_json_only_write_tool_hidden_when_disabled(tmp_path) -> None:
     reg = _reg(tmp_path, {"acct_create_json": deepcopy(_JSON_ONLY_WRITE)})
     assert "acct_create_json" not in _names(reg)
 
 
-def test_json_only_write_tool_listed_when_allow_write_on(tmp_path) -> None:
-    reg = _reg(tmp_path, {"acct_create_json": deepcopy(_JSON_ONLY_WRITE)}, allow_write=True)
+def test_json_only_write_tool_listed_when_enabled(tmp_path) -> None:
+    enabled = {**_JSON_ONLY_WRITE, "enabled": True}
+    reg = _reg(tmp_path, {"acct_create_json": enabled})
     assert "acct_create_json" in _names(reg)
 
 
 @pytest.mark.asyncio
-async def test_json_only_write_tool_call_refused_when_gated(tmp_path) -> None:
+async def test_json_only_write_tool_call_refused_when_disabled(tmp_path) -> None:
     reg = _reg(tmp_path, {"acct_create_json": deepcopy(_JSON_ONLY_WRITE)})
     session, client = _session()
     resp = await reg.call("acct_create_json", {"data": {"Name": "x"}}, session)
@@ -331,7 +332,6 @@ async def test_upsert_bind_supplies_bo_bc(tmp_path) -> None:
                 render="create_prose",
             )
         },
-        allow_write=True,
     )
     client = AsyncMock()
     client.create_record = AsyncMock(return_value={"Id": "1", "Name": "Acme"})
@@ -358,7 +358,6 @@ async def test_upsert_create_json_render(tmp_path) -> None:
                 render="create_json",
             )
         },
-        allow_write=True,
     )
     client = AsyncMock()
     client.create_record = AsyncMock(return_value={"Id": "1-ABC", "Name": "Acme"})
@@ -382,7 +381,6 @@ async def test_upsert_update_root(tmp_path) -> None:
                 allowed_fields=["Name"],
             )
         },
-        allow_write=True,
     )
     client = AsyncMock()
     client.update_record = AsyncMock(return_value={"Id": "1-XYZ", "Name": "New"})
@@ -413,7 +411,6 @@ async def test_upsert_create_child(tmp_path) -> None:
                 allowed_fields=["Last Name"],
             )
         },
-        allow_write=True,
     )
     client = AsyncMock()
     client.create_child_record = AsyncMock(return_value={"Id": "1-C", "Last Name": "Smith"})
@@ -443,7 +440,6 @@ async def test_upsert_allowed_fields_rejects_unknown_field(tmp_path) -> None:
                 render="create_prose",
             )
         },
-        allow_write=True,
     )
     client = AsyncMock()
     client.create_record = AsyncMock(return_value={"Id": "1"})
@@ -467,7 +463,6 @@ async def test_upsert_allowed_fields_accepts_listed_fields(tmp_path) -> None:
                 render="create_prose",
             )
         },
-        allow_write=True,
     )
     client = AsyncMock()
     client.create_record = AsyncMock(return_value={"Id": "1", "Name": "Acme", "Status": "Active"})
@@ -490,7 +485,6 @@ async def test_upsert_rejects_empty_data(tmp_path) -> None:
                 render="create_prose",
             )
         },
-        allow_write=True,
     )
     client = AsyncMock()
     client.create_record = AsyncMock(return_value={"Id": "1"})
@@ -514,7 +508,6 @@ async def test_upsert_bo_not_found(tmp_path) -> None:
                 render="create_prose",
             )
         },
-        allow_write=True,
     )
     client = AsyncMock()
     cache = AsyncMock()
@@ -538,7 +531,6 @@ async def test_upsert_siebel_error_is_masked(tmp_path) -> None:
                 render="create_prose",
             )
         },
-        allow_write=True,
     )
     client = AsyncMock()
     client.create_record = AsyncMock(side_effect=SiebelError("boom", 500, '{"ERROR":"x"}'))
@@ -561,7 +553,6 @@ async def test_upsert_unauthenticated_returns_error(tmp_path) -> None:
                 render="create_prose",
             )
         },
-        allow_write=True,
     )
     resp = await reg.call("acct_create", {"data": {"Name": "x"}}, _no_client_session())
     assert resp.get("isError") is True
@@ -571,11 +562,6 @@ async def test_upsert_unauthenticated_returns_error(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 # bc_delete — load-time validation
 # ---------------------------------------------------------------------------
-
-
-def test_delete_access_must_be_delete(tmp_path) -> None:
-    with pytest.raises(_SpecError, match="permits access"):
-        _reg(tmp_path, {"x": _delete(access="read")})
 
 
 def test_delete_unknown_render_rejected(tmp_path) -> None:
@@ -629,7 +615,6 @@ async def test_delete_success(tmp_path) -> None:
                 required=["id"],
             )
         },
-        allow_delete=True,
     )
     client = AsyncMock()
     client.delete_record = AsyncMock(return_value=None)
@@ -654,7 +639,6 @@ async def test_delete_bo_not_found(tmp_path) -> None:
                 required=["id"],
             )
         },
-        allow_delete=True,
     )
     client = AsyncMock()
     cache = AsyncMock()
@@ -676,27 +660,26 @@ async def test_delete_unauthenticated_returns_error(tmp_path) -> None:
                 required=["id"],
             )
         },
-        allow_delete=True,
     )
     resp = await reg.call("acct_delete", {"id": "1"}, _no_client_session())
     assert resp.get("isError") is True
     assert resp["content"][0]["text"] == "Not authenticated. Call the authenticate tool first."
 
 
-def test_delete_tool_gated_by_allow_delete(tmp_path) -> None:
+def test_delete_tool_gated_by_enabled_flag(tmp_path) -> None:
     fixture = _delete(
         bind={"business_object": "Account", "business_component": "Account"},
         props={"id": {"type": "string"}},
         required=["id"],
     )
-    reg_off = _reg(tmp_path, {"acct_delete": deepcopy(fixture)})
+    reg_off = _reg(tmp_path, {"acct_delete": {**fixture, "enabled": False}})
     assert "acct_delete" not in _names(reg_off)
-    reg_on = _reg(tmp_path, {"acct_delete": deepcopy(fixture)}, allow_delete=True)
+    reg_on = _reg(tmp_path, {"acct_delete": {**fixture, "enabled": True}})
     assert "acct_delete" in _names(reg_on)
 
 
 @pytest.mark.asyncio
-async def test_delete_call_refused_when_gated(tmp_path) -> None:
+async def test_delete_call_refused_when_disabled(tmp_path) -> None:
     reg = _reg(
         tmp_path,
         {
@@ -704,6 +687,7 @@ async def test_delete_call_refused_when_gated(tmp_path) -> None:
                 bind={"business_object": "Account", "business_component": "Account"},
                 props={"id": {"type": "string"}},
                 required=["id"],
+                enabled=False,
             )
         },
     )

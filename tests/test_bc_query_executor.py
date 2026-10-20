@@ -41,12 +41,11 @@ def _bcq(
     bind: dict[str, object] | None = None,
     template: str | None = None,
     handler: str | None = None,
-    access: str = "read",
+    enabled: bool | None = None,
 ) -> dict[str, object]:
     entry: dict[str, object] = {
         "description": "fixture bc_query tool",
         "kind": "bc_query",
-        "access": access,
         "scope": scope,
         "result": result,
         "render": render,
@@ -60,11 +59,13 @@ def _bcq(
         entry["searchspec_template"] = template
     if handler is not None:
         entry["handler"] = handler
+    if enabled is not None:
+        entry["enabled"] = enabled
     return entry
 
 
-def _reg(tmp_path, extra: dict[str, dict[str, object]], **settings_overrides) -> ToolRegistry:
-    settings = AppSettings(**settings_overrides)
+def _reg(tmp_path, extra: dict[str, dict[str, object]]) -> ToolRegistry:
+    settings = AppSettings()
     settings.tools_spec_path = _spec_path(tmp_path, extra)
     return ToolRegistry(settings)
 
@@ -86,11 +87,6 @@ def _session(query_result: SiebelQueryResult | None = None) -> tuple[SessionCont
 def test_bc_query_forbids_handler(tmp_path) -> None:
     with pytest.raises(_SpecError, match="handler"):
         _reg(tmp_path, {"x": _bcq(handler="mcp_siebel.handlers.records:_aggregate_data")})
-
-
-def test_bc_query_access_must_be_read(tmp_path) -> None:
-    with pytest.raises(_SpecError, match="permits access"):
-        _reg(tmp_path, {"x": _bcq(access="write")})
 
 
 def test_bc_query_unknown_render_rejected(tmp_path) -> None:

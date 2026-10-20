@@ -348,7 +348,6 @@ def _assemble_bc_query(entry: dict[str, Any], name: str) -> Any:
 
 BC_QUERY_KIND: _KindSpec = _KindSpec(
     name="bc_query",
-    allowed_access=frozenset({"read"}),
     allowed_options=_BC_QUERY_ALLOWED_OPTIONS,
     required_options=_BC_QUERY_REQUIRED_OPTIONS,
     validate=_validate_bc_query,

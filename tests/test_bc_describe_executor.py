@@ -39,7 +39,7 @@ def _describe(
     props: dict[str, object] | None = None,
     required: list[str] | None = None,
     bind: dict[str, object] | None = None,
-    access: str = "read",
+    enabled: bool | None = None,
     bo_schema: bool = False,
 ) -> dict[str, object]:
     if bo_schema:
@@ -48,7 +48,6 @@ def _describe(
     entry: dict[str, object] = {
         "description": "fixture bc_describe tool",
         "kind": "bc_describe",
-        "access": access,
         "source": source,
         "render": render,
         "input_schema": {"type": "object", "properties": props or {}},
@@ -57,6 +56,8 @@ def _describe(
         entry["input_schema"]["required"] = required  # type: ignore[index]
     if bind is not None:
         entry["bind"] = bind
+    if enabled is not None:
+        entry["enabled"] = enabled
     return entry
 
 
@@ -107,11 +108,6 @@ def _no_auth() -> SessionContext:
 # ---------------------------------------------------------------------------
 # Load-time validation
 # ---------------------------------------------------------------------------
-
-
-def test_describe_access_must_be_read(tmp_path) -> None:
-    with pytest.raises(_SpecError, match="permits access"):
-        _reg(tmp_path, {"x": _describe(access="write")})
 
 
 def test_describe_invalid_source_rejected(tmp_path) -> None:

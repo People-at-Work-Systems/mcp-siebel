@@ -345,11 +345,19 @@ async def test_get_query_syntax_returns_static_text() -> None:
     reg = ToolRegistry(AppSettings())
     resp = await reg.call("get_query_syntax", {"user_question": "how?"}, _unauth_session())
     assert resp.get("isError") is not True
-    assert resp["content"][0]["text"] == (
-        "Use <> for not equal; never use !=.\n"
-        "Field names go in square brackets: [Status] = 'Open'.\n"
-        "Use LIKE with * wildcards: [Name] LIKE 'Acme*'.\n"
-        "Combine with AND/OR and parenthesize compound expressions.\n"
-        "Dates may use Today(), Timestamp(), and arithmetic such as Today()-30.\n"
-        "Siebel may return 404 when a query has no records."
-    )
+    expected_lines = [
+        "Field names go in square brackets: [Status] = 'Open'.",
+        "Put string and date values in single quotes; double a single quote inside a value: "
+        "[Name] = 'O''Brien'.",
+        "Comparison operators: =, <>, <, <=, >, >=. Never use !=.",
+        "Wildcards with LIKE: * matches any characters, ? matches one character: [Name] LIKE 'Acme*'.",
+        "Case-insensitive matching: [Name] ~LIKE 'acme*'.",
+        "Empty values: [Field] IS NULL, [Field] IS NOT NULL.",
+        "Combine conditions with AND / OR / NOT and use parentheses: "
+        "([Status] = 'Open' OR [Status] = 'Pending') AND [Priority] = 'High'.",
+        "Dates use MM/DD/YYYY: [Created] >= '01/01/2026'. Resolve relative dates with "
+        "calculate_date first; Today() and arithmetic such as Today()-30 also work.",
+        "Fields listed only by describe_repository may be used in a searchspec or sort_spec, "
+        "but not in 'fields'.",
+    ]
+    assert resp["content"][0]["text"] == "\n".join(expected_lines)

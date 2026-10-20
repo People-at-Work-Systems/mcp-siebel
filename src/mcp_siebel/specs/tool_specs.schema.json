@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://mcp-siebel.dev/schemas/tool_specs.schema.json",
   "title": "mcp-siebel tool spec",
-  "description": "JSON Schema for src/mcp_siebel/specs/tool_specs.json. Describes the top-level sections ($defs, preferred_fields, tools), the fields common to every entry (description, kind, access, always_enabled, establishes_session, input_schema), and the per-kind options validated with if/then on 'kind'. This is an authoring aid for editors (autocomplete + validation); the loader's runtime validation remains the source of truth — a spec that passes this schema may still be rejected by the loader (e.g. a render from the wrong family for a kind's mode/source/result, a handler that does not resolve, or a cross-field rule this schema does not express).",
+  "description": "JSON Schema for src/mcp_siebel/specs/tool_specs.json. Describes the top-level sections ($defs, preferred_fields, tools), the fields common to every entry (description, kind, enabled, establishes_session, input_schema), and the per-kind options validated with if/then on 'kind'. This is an authoring aid for editors (autocomplete + validation); the loader's runtime validation remains the source of truth — a spec that passes this schema may still be rejected by the loader (e.g. a render from the wrong family for a kind's mode/source/result, a handler that does not resolve, or a cross-field rule this schema does not express).",
   "type": "object",
   "required": ["tools"],
   "additionalProperties": false,
@@ -33,11 +33,6 @@
     }
   },
   "$defs": {
-    "accessEnum": {
-      "type": "string",
-      "enum": ["read", "write", "delete", "external"],
-      "description": "Access level. 'read' is always available; 'write' is gated by SIEBEL_ALLOW_WRITE; 'delete' by SIEBEL_ALLOW_DELETE; 'external' (tools that send free text to an outside service, e.g. web search) by SIEBEL_ALLOW_EXTERNAL. All three gates default off."
-    },
     "kindEnum": {
       "type": "string",
       "enum": ["python", "bc_query", "bc_upsert", "bc_delete", "bc_describe", "bc_read", "static_text"]
@@ -83,19 +78,19 @@
     },
     "toolEntry": {
       "type": "object",
-      "required": ["description", "kind", "access", "input_schema"],
+      "required": ["description", "kind", "input_schema"],
       "additionalProperties": false,
       "properties": {
         "description": { "type": "string" },
         "kind": { "$ref": "#/$defs/kindEnum" },
-        "access": { "$ref": "#/$defs/accessEnum" },
-        "always_enabled": {
+        "enabled": {
           "type": "boolean",
-          "description": "Exempts the tool from SIEBEL_DISABLED_TOOLS. Only allowed with access 'read' (enforced below) — it must never bypass the access gate."
+          "default": true,
+          "description": "The single on/off switch for a tool. false hides it from list_tools() and refuses it in call(). Defaults to true; the bundled spec sets enabled: false on its 7 write/delete/external tools (read-only by default). Flip enabled: true in an override spec to turn a tool on — no env var."
         },
         "establishes_session": {
           "type": "boolean",
-          "description": "True for the single tool the transports call to create a session. Exactly one entry must set this; it must also be always_enabled and access 'read' (checked by the loader)."
+          "description": "True for the single tool the transports call to create a session. Exactly one entry must set this; it must also be enabled (checked by the loader)."
         },
         "input_schema": { "$ref": "#/$defs/inputSchema" },
         "handler": { "type": "string", "description": "python only: 'mcp_siebel.handlers.<module>:<func>'. The resolver permits only modules under mcp_siebel.handlers." },
@@ -122,16 +117,6 @@
         }
       },
       "allOf": [
-        {
-          "description": "always_enabled is only allowed with access 'read'.",
-          "if": {
-            "required": ["always_enabled"],
-            "properties": { "always_enabled": { "const": true } }
-          },
-          "then": {
-            "properties": { "access": { "const": "read" } }
-          }
-        },
         {
           "if": { "required": ["kind"], "properties": { "kind": { "const": "python" } } },
           "then": {

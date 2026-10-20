@@ -28,14 +28,21 @@ def _spec_path(tmp_path, extra: dict[str, dict[str, object]]) -> str:
     return str(path)
 
 
-def _static(text: object, *, access: str = "read", props: dict[str, object] | None = None) -> dict[str, object]:
-    return {
+def _static(
+    text: object,
+    *,
+    enabled: bool | None = None,
+    props: dict[str, object] | None = None,
+) -> dict[str, object]:
+    entry: dict[str, object] = {
         "description": "fixture static_text tool",
         "kind": "static_text",
-        "access": access,
         "text": text,
         "input_schema": {"type": "object", "properties": props or {}},
     }
+    if enabled is not None:
+        entry["enabled"] = enabled
+    return entry
 
 
 def _reg(tmp_path, extra: dict[str, dict[str, object]]) -> ToolRegistry:
@@ -45,11 +52,6 @@ def _reg(tmp_path, extra: dict[str, dict[str, object]]) -> ToolRegistry:
 
 
 # --- load-time validation ---
-
-
-def test_static_text_access_must_be_read(tmp_path) -> None:
-    with pytest.raises(_SpecError, match="permits access"):
-        _reg(tmp_path, {"x": _static("hi", access="write")})
 
 
 def test_static_text_text_required(tmp_path) -> None:

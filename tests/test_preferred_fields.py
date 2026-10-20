@@ -64,7 +64,7 @@ _EXPECTED_BUNDLED: dict[str, list[str]] = {
         "Sales Stage",
         "Primary Revenue Amount",
         "Primary Revenue Close Date",
-        "Win Probability",
+        "Primary Revenue Win Probability",
         "Primary Organization",
         "Sales Method",
         "Description",

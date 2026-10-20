@@ -26,8 +26,8 @@ def test_health_reports_loaded_tools_and_spec():
     response = client.get("/health")
     assert response.status_code == 200
     body = response.json()
-    # number of tools loaded from the spec (all of them, gated or not)
-    assert body["tools"] == 25
+    # number of tools loaded from the spec (all of them, enabled or not)
+    assert body["tools"] == 26
     # the spec file the registry loaded from, and its mtime
     assert body["spec_path"].endswith("tool_specs.json")
     assert isinstance(body["spec_mtime"], (int, float))

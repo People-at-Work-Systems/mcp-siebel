@@ -54,7 +54,6 @@ def _assemble_static_text(entry: dict[str, Any], name: str) -> Any:
 
 STATIC_TEXT_KIND: _KindSpec = _KindSpec(
     name="static_text",
-    allowed_access=frozenset({"read"}),
     allowed_options=_STATIC_TEXT_ALLOWED_OPTIONS,
     required_options=_STATIC_TEXT_REQUIRED_OPTIONS,
     validate=_validate_static_text,

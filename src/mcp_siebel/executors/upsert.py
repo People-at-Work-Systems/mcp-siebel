@@ -179,7 +179,6 @@ def _assemble_bc_upsert(entry: dict[str, Any], name: str) -> Any:
 
 UPSERT_KIND: _KindSpec = _KindSpec(
     name="bc_upsert",
-    allowed_access=frozenset({"write"}),
     allowed_options=_UPSERT_ALLOWED_OPTIONS,
     required_options=_UPSERT_REQUIRED_OPTIONS,
     validate=_validate_bc_upsert,
