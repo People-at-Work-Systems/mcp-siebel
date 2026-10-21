@@ -36,6 +36,10 @@ The stdio server is the default and needs no extra deps. The HTTP/SSE server
 | `MCP_API_TOKEN` | no | Bearer-token guard on the HTTP/SSE server (unset = no auth). `SIEBEL_API_TOKEN` is an alias for the same guard. |
 | `SIEBEL_VERIFY_TLS` | no | `true` (default) — verify the Siebel server certificate. Against a self-signed dev Siebel, set `SIEBEL_CA_BUNDLE` to trust it, or `false` to disable verification (dev only). |
 
+> These are the client-setup essentials. See [README.md § Configuration](../README.md#configuration)
+> for the complete env-var reference (connection, Siebel tuning, session lifetime,
+> demo, system prompt, secrets, …).
+
 `command` can be any of:
 - the venv binary directly: `/path/to/mcp-siebel/.venv/bin/mcp-siebel`
 - `uv run mcp-siebel` (from a checkout)
