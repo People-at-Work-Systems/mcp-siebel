@@ -22,7 +22,10 @@
       "items": {
         "type": "string"
       },
-      "type": ["array", "string"]
+      "type": [
+        "array",
+        "string"
+      ]
     },
     "id": {
       "description": "Siebel row Id of the record, e.g. '1-5GZE'. Take it from a previous tool result; never show it to the user.",
@@ -117,6 +120,7 @@
     "aggregate_data": {
       "description": "Compute an exact sum, avg, min, max or count over all records matching an optional searchspec, server-side. Use this for every numeric calculation over Siebel data; never compute, estimate or reuse such numbers yourself. 'field' must be a numeric field returned by describe_business_object.",
       "kind": "python",
+      "enabled": true,
       "handler": "mcp_siebel.handlers.records:_aggregate_data",
       "input_schema": {
         "properties": {
@@ -150,6 +154,7 @@
     "authenticate": {
       "description": "Start a Siebel session for the user. Call this before any other Siebel tool and pass the returned session_id to every subsequent tool call in the conversation. If a tool reports an authentication or session error, call this again and retry the operation.",
       "kind": "python",
+      "enabled": true,
       "establishes_session": true,
       "handler": "mcp_siebel.handlers.auth:_authenticate",
       "input_schema": {
@@ -174,6 +179,7 @@
     "calculate_date": {
       "description": "Resolve a natural-language date ('today', 'next Monday', 'end of quarter', 'in 30 days') to MM/DD/YYYY. Always call this before using a relative date in a searchspec or in create/update data; never calculate dates yourself.",
       "kind": "python",
+      "enabled": true,
       "handler": "mcp_siebel.handlers.util:_calculate_date",
       "input_schema": {
         "properties": {
@@ -192,6 +198,7 @@
     "count_records": {
       "description": "Count records matching an optional searchspec without fetching them. Use this for every 'how many' question and report the number exactly as returned; never count rows yourself or reuse an earlier number. A count of 0 can also mean the user has no visibility on those records.",
       "kind": "bc_query",
+      "enabled": true,
       "render": "count_prose",
       "result": "count",
       "scope": "root",
@@ -331,6 +338,7 @@
     "describe_business_object": {
       "description": "Get the REST field list (names, types, required/read-only, length) of a Business Component. Call this before the first query, create or update on a Business Component, and use only the field names it returns in 'fields' and 'data'. For child records, call it with the parent Business Object and the child Business Component name: child BCs can expose different fields than the standalone BC. Fields that are missing here may still be valid in searchspec/sort_spec; check them with describe_repository.",
       "kind": "bc_describe",
+      "enabled": true,
       "render": "describe_bc_prose",
       "source": "bc_descriptor",
       "input_schema": {
@@ -352,6 +360,7 @@
     "describe_business_object_json": {
       "description": "Same REST field list as describe_business_object, as structured JSON for programmatic consumers (the CRM navigator's result-list columns; no LOV types). For answers to the user, use describe_business_object.",
       "kind": "bc_describe",
+      "enabled": true,
       "render": "describe_bc_json",
       "source": "bc_descriptor",
       "input_schema": {
@@ -373,6 +382,7 @@
     "describe_repository": {
       "description": "Query Siebel repository metadata for the full field list of a Business Component: pre/post default values, LOV picklist types, calculated field flags, join info, and fields that are valid in searchspec/sort_spec but not returned by the REST data API. Call this when you need a field not listed by describe_business_object, before create/update to check required fields and their defaults, and whenever you are unsure about a field name or picklist. Fields listed here but not by describe_business_object may be used only in searchspec/sort_spec, never in 'fields'; tell the user such a field cannot be shown.",
       "kind": "bc_describe",
+      "enabled": true,
       "render": "repository_prose",
       "source": "repository",
       "input_schema": {
@@ -394,6 +404,7 @@
     "describe_repository_json": {
       "description": "Repository field metadata for a Business Component as structured JSON (name, type, LOV type, flags), for programmatic consumers such as the navigator's filter chips. For answers to the user, use describe_repository.",
       "kind": "bc_describe",
+      "enabled": true,
       "render": "repository_json",
       "source": "repository",
       "input_schema": {
@@ -415,6 +426,7 @@
     "get_list_of_values": {
       "description": "Fetch the allowed values of Siebel picklists by LOV type code, e.g. 'ACCOUNT_STATUS'. Find a field's LOV type with describe_repository. Use this before filtering on or writing a picklist field, so that you use a valid value.",
       "kind": "python",
+      "enabled": true,
       "handler": "mcp_siebel.handlers.metadata:_get_list_of_values",
       "input_schema": {
         "properties": {
@@ -436,6 +448,7 @@
     "get_query_syntax": {
       "description": "Reference for Siebel search expressions (searchspec). Call this before building your first searchspec in a conversation.",
       "kind": "static_text",
+      "enabled": true,
       "text": [
         "Field names go in square brackets: [Status] = 'Open'.",
         "Put string and date values in single quotes; double a single quote inside a value: [Name] = 'O''Brien'.",
@@ -461,6 +474,7 @@
     "get_record": {
       "description": "Get one record by its Id (taken from a previous query). Present it to the user as a readable list of business fields; leave out Id and '* Id' fields and internal flags. Pass 'fields' (names from describe_business_object) for a focused result.",
       "kind": "bc_read",
+      "enabled": true,
       "fallback": "curated_query",
       "mode": "single",
       "render": "record_prose",
@@ -490,6 +504,7 @@
     "get_record_with_children": {
       "description": "Get one record by Id together with all its child records in one call. Present the parent fields as a list and each set of child records as a Markdown table, without Id fields.",
       "kind": "bc_read",
+      "enabled": true,
       "mode": "with_children",
       "render": "record_hierarchical_prose",
       "input_schema": {
@@ -515,6 +530,7 @@
     "list_business_objects": {
       "description": "List all Siebel Business Objects available through the REST API. Call this when you do not know the exact Business Object name; never guess it.",
       "kind": "bc_describe",
+      "enabled": true,
       "render": "list_prose",
       "source": "business_objects",
       "input_schema": {
@@ -526,6 +542,7 @@
     "list_business_objects_json": {
       "description": "Same as list_business_objects, as structured JSON for programmatic consumers such as the CRM navigator. For answers to the user, use list_business_objects.",
       "kind": "bc_describe",
+      "enabled": true,
       "render": "list_json",
       "source": "business_objects",
       "input_schema": {
@@ -537,6 +554,7 @@
     "query_child_records": {
       "description": "Query child records under one parent record, e.g. the Contacts of an Account. Before the first call, run describe_business_object with the parent Business Object and the child Business Component: child BCs can expose different fields than the standalone BC, so never reuse a standalone field list. For attachments, use the matching attachment BC, e.g. 'Account Attachment'. If the child BC is not linked under this Business Object, the call fails; tell the user that this relationship cannot be queried. Present results as a Markdown table without Id columns.",
       "kind": "bc_query",
+      "enabled": true,
       "render": "child_query_prose",
       "result": "records",
       "scope": "child",
@@ -582,6 +600,7 @@
     "query_child_records_json": {
       "description": "Same as query_child_records, returning structured JSON for programmatic consumers. The same field rules apply (describe_business_object with parent BO and child BC first). For answers to the user, prefer query_child_records.",
       "kind": "bc_query",
+      "enabled": true,
       "render": "query_json",
       "result": "records",
       "scope": "child",
@@ -627,6 +646,7 @@
     "query_data": {
       "description": "Search records of a Business Component with a Siebel searchspec; returns readable text for answering the user. Before the first query on a Business Component, call describe_business_object and use only the field names it returns in 'fields'; call get_query_syntax before building a searchspec. Present several records as a Markdown table without Id columns. Results are paged: if there are more rows than returned, tell the user how many were shown out of the total. An empty result can also mean the user has no visibility on those records; say that no records were found.",
       "kind": "bc_query",
+      "enabled": true,
       "render": "query_prose",
       "result": "records",
       "scope": "root",
@@ -664,6 +684,7 @@
     "query_records_json": {
       "description": "Same as query_data, returning structured JSON (items, totalCount, hasMore) for programmatic consumers or for paging through large result sets. The same field rules apply: describe_business_object first, only returned field names in 'fields'. 'childlinks' expands child BCs inline. For answers to the user, prefer query_data.",
       "kind": "bc_query",
+      "enabled": true,
       "render": "query_json",
       "result": "records",
       "scope": "root",
@@ -708,6 +729,7 @@
     "siebel_usage_guide": {
       "description": "Working rules for this Siebel CRM server. Call this once at the start of a conversation, before your first Siebel query, and follow the rules it returns.",
       "kind": "static_text",
+      "enabled": true,
       "text": [
         "Fetch every CRM fact with a tool call in the current turn; never answer from earlier results or from memory.",
         "Field names differ between Siebel installations. Before querying, creating or updating a Business Component, call describe_business_object and use only the field names it returns in 'fields' and 'data'.",

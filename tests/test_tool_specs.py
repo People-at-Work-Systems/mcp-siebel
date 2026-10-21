@@ -43,7 +43,7 @@ def _entry(
     *,
     kind: str = "python",
     handler: str = "mcp_siebel.handlers.records:_aggregate_data",
-    enabled: bool | None = None,
+    enabled: bool = True,
 ) -> dict[str, object]:
     """A minimal valid spec entry. The default handler points at a real,
     resolvable function so an entry is valid out of the box; tests that need a
@@ -58,8 +58,7 @@ def _entry(
         "handler": handler,
         "input_schema": schema,
     }
-    if enabled is not None:
-        entry["enabled"] = enabled
+    entry["enabled"] = enabled
     return entry
 
 
@@ -118,7 +117,7 @@ def test_spec_entries_have_known_kind_and_valid_options() -> None:
         if name in disabled_expected:
             assert entry.get("enabled") is False, f"{name}: expected enabled: false"
         else:
-            assert "enabled" not in entry, f"{name}: expected no enabled key (default true)"
+            assert entry.get("enabled") is True, f"{name}: expected enabled: true"
     reg = ToolRegistry(AppSettings())
     assert set(reg._tools) == set(tools), "registry didn't load every bundled tool"
 

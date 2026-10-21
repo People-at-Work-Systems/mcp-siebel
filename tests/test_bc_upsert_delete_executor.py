@@ -44,7 +44,7 @@ def _upsert(
     required: list[str] | None = None,
     bind: dict[str, object] | None = None,
     allowed_fields: list[str] | None = None,
-    enabled: bool | None = None,
+    enabled: bool = True,
 ) -> dict[str, object]:
     entry: dict[str, object] = {
         "description": "fixture bc_upsert tool",
@@ -60,8 +60,7 @@ def _upsert(
         entry["bind"] = bind
     if allowed_fields is not None:
         entry["allowed_fields"] = allowed_fields
-    if enabled is not None:
-        entry["enabled"] = enabled
+    entry["enabled"] = enabled
     return entry
 
 
@@ -71,7 +70,7 @@ def _delete(
     props: dict[str, object] | None = None,
     required: list[str] | None = None,
     bind: dict[str, object] | None = None,
-    enabled: bool | None = None,
+    enabled: bool = True,
 ) -> dict[str, object]:
     entry: dict[str, object] = {
         "description": "fixture bc_delete tool",
@@ -83,8 +82,7 @@ def _delete(
         entry["input_schema"]["required"] = required  # type: ignore[index]
     if bind is not None:
         entry["bind"] = bind
-    if enabled is not None:
-        entry["enabled"] = enabled
+    entry["enabled"] = enabled
     return entry
 
 

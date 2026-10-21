@@ -63,7 +63,7 @@ def _bcr(
     bind: dict[str, object] | None = None,
     fallback: str | None = None,
     handler: str | None = None,
-    enabled: bool | None = None,
+    enabled: bool = True,
 ) -> dict[str, object]:
     entry: dict[str, object] = {
         "description": "fixture bc_read tool",
@@ -80,8 +80,7 @@ def _bcr(
         entry["fallback"] = fallback
     if handler is not None:
         entry["handler"] = handler
-    if enabled is not None:
-        entry["enabled"] = enabled
+    entry["enabled"] = enabled
     return entry
 
 

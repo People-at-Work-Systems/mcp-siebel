@@ -39,7 +39,7 @@ def _describe(
     props: dict[str, object] | None = None,
     required: list[str] | None = None,
     bind: dict[str, object] | None = None,
-    enabled: bool | None = None,
+    enabled: bool = True,
     bo_schema: bool = False,
 ) -> dict[str, object]:
     if bo_schema:
@@ -56,8 +56,7 @@ def _describe(
         entry["input_schema"]["required"] = required  # type: ignore[index]
     if bind is not None:
         entry["bind"] = bind
-    if enabled is not None:
-        entry["enabled"] = enabled
+    entry["enabled"] = enabled
     return entry
 
 

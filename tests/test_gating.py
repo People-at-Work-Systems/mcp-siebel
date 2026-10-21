@@ -1,10 +1,11 @@
 """Read-only by default via the per-tool ``enabled`` flag in the spec.
 
 The bundled ``tool_specs.json`` sets ``"enabled": false`` on its 7
-write/delete/external tools; every other tool omits ``enabled`` (default
-true). The registry hides disabled tools from ``list_tools()`` and refuses
-them in ``call()``. Enabling a tool is done by flipping ``"enabled": true``
-on its entry in an override spec (``SIEBEL_TOOLS_SPEC_PATH``) — no env var.
+write/delete/external tools and ``"enabled": true`` on every other tool;
+``enabled`` is mandatory on every entry (fail-closed — no silent default).
+The registry hides disabled tools from ``list_tools()`` and refuses them in
+``call()``. Enabling a tool is done by flipping ``"enabled": true`` on its
+entry in an override spec (``SIEBEL_TOOLS_SPEC_PATH``) — no env var.
 See ``tool_specs.json`` and ``ToolRegistry``.
 """
 
@@ -100,13 +101,14 @@ def test_override_enabled_true_exposes_external_tool(tmp_path) -> None:
     assert "web_search" in _names(reg)
 
 
-def test_omitting_enabled_defaults_true(tmp_path) -> None:
-    """An entry that omits enabled is enabled by default — so deleting the
-    enabled: false key from a disabled tool exposes it."""
+def test_omitting_enabled_is_rejected(tmp_path) -> None:
+    """enabled is mandatory (fail-closed): an entry that omits it is a load
+    failure, not silently enabled. So deleting the enabled: false key from a
+    disabled tool does NOT expose it — the spec fails to load."""
     tools = deepcopy(_bundled_tools())
     tools["delete_record"] = {k: v for k, v in tools["delete_record"].items() if k != "enabled"}  # type: ignore[union-attr]
-    reg = _registry_with_spec(tmp_path, tools)
-    assert "delete_record" in _names(reg)
+    with pytest.raises(_SpecError, match="enabled"):
+        _registry_with_spec(tmp_path, tools)
 
 
 # --- disabled tools are refused at call() ------------------------------------
@@ -158,6 +160,7 @@ _BULK_CREATE: dict[str, object] = {
     "operation": "create",
     "scope": "root",
     "render": "create_prose",
+    "enabled": True,
     "input_schema": {
         "type": "object",
         "properties": {"business_object": {"type": "string"}},
@@ -166,13 +169,22 @@ _BULK_CREATE: dict[str, object] = {
 }
 
 
-def test_new_tool_enabled_by_default(tmp_path) -> None:
-    """A new tool with no enabled key is enabled by default — no env var
-    needed."""
+def test_new_tool_listed_when_enabled_true(tmp_path) -> None:
+    """A new tool with enabled: true is listed — no env var needed."""
     tools = deepcopy(_bundled_tools())
     tools["bulk_create"] = _BULK_CREATE  # type: ignore[index]
     reg = _registry_with_spec(tmp_path, tools)
     assert "bulk_create" in _names(reg)
+
+
+def test_new_tool_without_enabled_is_rejected(tmp_path) -> None:
+    """enabled is mandatory: a new tool that omits it fails to load (fail-closed),
+    rather than being silently enabled."""
+    tools = deepcopy(_bundled_tools())
+    bulk = {k: v for k, v in _BULK_CREATE.items() if k != "enabled"}
+    tools["bulk_create"] = bulk  # type: ignore[index]
+    with pytest.raises(_SpecError, match="enabled"):
+        _registry_with_spec(tmp_path, tools)
 
 
 def test_new_tool_hidden_when_enabled_false(tmp_path) -> None:

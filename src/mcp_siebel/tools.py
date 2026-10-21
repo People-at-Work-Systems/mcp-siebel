@@ -236,23 +236,37 @@ def _deref(node: Any, defs: dict[str, Any], _stack: tuple[str, ...] = ()) -> Any
     return node
 
 
-def _valid_spec_entry(entry: Any) -> bool:
+def _valid_spec_entry(entry: Any) -> str | None:
     """Pre-deref structural check of the fields COMMON to every kind: an entry
-    must carry a string description, a string ``kind``, and an input_schema
-    dict with a type and a properties map. ``enabled`` and
-    ``establishes_session`` are optional but, if present, must be bools.
-    Kind-specific fields (e.g. ``handler`` for python, ``scope``/``result``/
-    ``render`` for bc_query) are validated per-kind."""
-    return (
-        isinstance(entry, dict)
-        and isinstance(entry.get("description"), str)
-        and isinstance(entry.get("input_schema"), dict)
-        and isinstance(entry["input_schema"].get("properties"), dict)
-        and "type" in entry["input_schema"]
-        and isinstance(entry.get("kind"), str)
-        and ("enabled" not in entry or isinstance(entry["enabled"], bool))
-        and ("establishes_session" not in entry or isinstance(entry["establishes_session"], bool))
-    )
+    must carry a string description, a string ``kind``, an input_schema dict
+    with a type and a properties map, and a boolean ``enabled`` (mandatory — no
+    silent fail-open default). ``establishes_session`` is optional but, if
+    present, must be a bool. Kind-specific fields (e.g. ``handler`` for python,
+    ``scope``/``result``/``render`` for bc_query) are validated per-kind.
+
+    Returns ``None`` when the entry passes the common-field checks, otherwise a
+    short reason naming the first failed check so the loader can raise a
+    ``_SpecError`` that says *why* the entry is invalid (not just that it is)."""
+    if not isinstance(entry, dict):
+        return "entry must be an object"
+    if not isinstance(entry.get("description"), str):
+        return "missing or non-string 'description'"
+    schema = entry.get("input_schema")
+    if not isinstance(schema, dict):
+        return "missing or non-object 'input_schema'"
+    if not isinstance(schema.get("properties"), dict):
+        return "'input_schema.properties' must be an object"
+    if "type" not in schema:
+        return "'input_schema' missing 'type'"
+    if not isinstance(entry.get("kind"), str):
+        return "missing or non-string 'kind'"
+    if "enabled" not in entry:
+        return "missing mandatory 'enabled' (boolean, no default)"
+    if not isinstance(entry["enabled"], bool):
+        return "'enabled' must be a boolean"
+    if "establishes_session" in entry and not isinstance(entry["establishes_session"], bool):
+        return "'establishes_session' must be a boolean"
+    return None
 
 
 def _valid_resolved_schema(schema: Any) -> bool:
@@ -498,8 +512,9 @@ class ToolRegistry:
 
         built: dict[str, ToolSpec] = {}
         for name, entry in tools_data.items():
-            if not _valid_spec_entry(entry):
-                raise _SpecError(f"invalid entry for {name!r}")
+            reason = _valid_spec_entry(entry)
+            if reason is not None:
+                raise _SpecError(f"invalid entry for {name!r}: {reason}")
             kind = entry["kind"]
             kind_spec = _KINDS.get(kind)
             if kind_spec is None:
@@ -523,7 +538,7 @@ class ToolRegistry:
                 description=entry["description"],
                 input_schema=schema,
                 handler=handler,
-                enabled=bool(entry.get("enabled", True)),
+                enabled=bool(entry["enabled"]),
                 establishes_session=bool(entry.get("establishes_session", False)),
             )
         # Exactly one entry establishes a session; it must be enabled. The

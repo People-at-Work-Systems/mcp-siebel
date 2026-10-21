@@ -41,7 +41,7 @@ def _bcq(
     bind: dict[str, object] | None = None,
     template: str | None = None,
     handler: str | None = None,
-    enabled: bool | None = None,
+    enabled: bool = True,
 ) -> dict[str, object]:
     entry: dict[str, object] = {
         "description": "fixture bc_query tool",
@@ -59,8 +59,7 @@ def _bcq(
         entry["searchspec_template"] = template
     if handler is not None:
         entry["handler"] = handler
-    if enabled is not None:
-        entry["enabled"] = enabled
+    entry["enabled"] = enabled
     return entry
 
 

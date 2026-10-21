@@ -71,7 +71,9 @@ def test_schema_declares_enabled_property() -> None:
     props = tool_entry["properties"]  # type: ignore[index]
     enabled = props["enabled"]  # type: ignore[index]
     assert enabled["type"] == "boolean"
-    assert enabled["default"] is True
+    # enabled is mandatory (fail-closed): no silent default, and required on every entry.
+    assert "default" not in enabled
+    assert "enabled" in tool_entry.get("required", [])  # type: ignore[union-attr]
     # access and always_enabled are gone — enabled is the only on/off switch.
     assert "access" not in props
     assert "always_enabled" not in props

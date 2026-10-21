@@ -31,7 +31,7 @@ def _spec_path(tmp_path, extra: dict[str, dict[str, object]]) -> str:
 def _static(
     text: object,
     *,
-    enabled: bool | None = None,
+    enabled: bool = True,
     props: dict[str, object] | None = None,
 ) -> dict[str, object]:
     entry: dict[str, object] = {
@@ -40,8 +40,7 @@ def _static(
         "text": text,
         "input_schema": {"type": "object", "properties": props or {}},
     }
-    if enabled is not None:
-        entry["enabled"] = enabled
+    entry["enabled"] = enabled
     return entry
 
 

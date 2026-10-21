@@ -78,15 +78,14 @@
     },
     "toolEntry": {
       "type": "object",
-      "required": ["description", "kind", "input_schema"],
+      "required": ["description", "kind", "input_schema", "enabled"],
       "additionalProperties": false,
       "properties": {
         "description": { "type": "string" },
         "kind": { "$ref": "#/$defs/kindEnum" },
         "enabled": {
           "type": "boolean",
-          "default": true,
-          "description": "The single on/off switch for a tool. false hides it from list_tools() and refuses it in call(). Defaults to true; the bundled spec sets enabled: false on its 7 write/delete/external tools (read-only by default). Flip enabled: true in an override spec to turn a tool on — no env var."
+          "description": "The single on/off switch for a tool. false hides it from list_tools() and refuses it in call(). Mandatory on every entry — there is no silent default, so a deployer must opt in to each tool explicitly. The bundled spec sets enabled: false on its 7 write/delete/external tools (read-only by default) and enabled: true on the rest; flip enabled: true in an override spec to turn a tool on — no env var."
         },
         "establishes_session": {
           "type": "boolean",
