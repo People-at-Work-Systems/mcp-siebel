@@ -401,11 +401,6 @@ SIEBEL_PROBE_BUSINESS_COMPONENT=Account
 # Optional bundled-prompt override
 # SIEBEL_SYSTEM_PROMPT_PATH=/path/to/your-siebel-system.md
 
-# OAuth (optional — for Siebel OAuth/Keycloak auth mode)
-# SIEBEL_OAUTH_CLIENT_ID=
-# SIEBEL_OAUTH_CLIENT_SECRET=
-# SIEBEL_KEYCLOAK_TOKEN_URL=https://keycloak.example.com/realms/yourrealm/protocol/openid-connect/token
-
 # Optional bearer-token guard on the HTTP/SSE server (unset = no auth). Both
 # names populate the same guard; MCP_API_TOKEN is the documented name and
 # SIEBEL_API_TOKEN is kept for compatibility with the SIEBEL_ namespace.

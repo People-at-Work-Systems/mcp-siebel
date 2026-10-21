@@ -18,7 +18,7 @@ deployment** will likely require adaptation work on **both** sides:
 
 - on the **Siebel side** — REST-enabling the business objects/components you
   want to query, granting the connecting identity the right responsibilities,
-  and configuring SSO/OAuth;
+  and configuring SSO;
 - on the **mcp-siebel side** — field names, business-component assumptions
   baked into the tools and the bundled system prompt, and the auth-probe
   BO/BC may all need adjustment to match your Siebel.
@@ -31,10 +31,8 @@ Do not expect it to work unmodified against a production-customized Siebel.
   interface).
 - Network access from this server to the Siebel REST endpoint
   (`SIEBEL_BASE_URL`, or `SIEBEL_HOST` + `SIEBEL_SCHEME`).
-- A Siebel identity: either **SSO header** auth (`SIEBEL_SSO_HEADER`, default
-  `SBL_USER`) in standalone mode, or **OAuth/Keycloak**
-  (`SIEBEL_OAUTH_CLIENT_ID` / `SIEBEL_OAUTH_CLIENT_SECRET` /
-  `SIEBEL_KEYCLOAK_TOKEN_URL`).
+- A Siebel identity: **SSO header** auth (`SIEBEL_SSO_HEADER`, default
+  `SBL_USER`) in standalone mode.
 - The business objects/components the tools query must be **REST-enabled** and
   accessible to that identity.
 - An **auth-probe BO/BC** (`SIEBEL_PROBE_BUSINESS_OBJECT` /

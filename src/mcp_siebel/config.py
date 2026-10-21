@@ -86,11 +86,6 @@ class AppSettings(BaseSettings):
     # JSON spec is hot-reloaded.
     tools_spec_watch: bool = Field(default=True, alias="SIEBEL_TOOLS_SPEC_WATCH")
 
-    # -- OAuth ----------------------------------------------------------------
-    oauth_client_id: str = ""
-    oauth_client_secret: str = ""
-    keycloak_token_url: str = ""
-
     # -- Secrets (prefixed to stay consistent with SIEBEL_ namespace) ---------
     brave_search_api_key: str = ""
     # Bearer token guarding the HTTP/SSE server. Accepts both MCP_API_TOKEN
