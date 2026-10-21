@@ -143,11 +143,13 @@ list. The essentials:
 | `SIEBEL_SCHEME` | `http` | Used only when composing from `SIEBEL_HOST` |
 | `SIEBEL_MCP_MODE` | `standalone` | Auth mode |
 | `SIEBEL_SSO_HEADER` | `SBL_USER` | SSO header name (standalone mode) |
+| `SIEBEL_VERIFY_TLS` | `true` | Verify the Siebel server TLS certificate. Against a self-signed dev Siebel, set `SIEBEL_CA_BUNDLE` to trust it (verification stays on) or set this to `false` (dev only — disables verification). |
+| `SIEBEL_CA_BUNDLE` | *(unset → OS roots)* | Path to a CA bundle file used to verify the Siebel certificate. Overrides `SIEBEL_VERIFY_TLS` when set, so a self-signed cert can be trusted with verification still on. |
 | `SIEBEL_TOOLS_SPEC_PATH` | *(unset → bundled)* | Override the tool-spec JSON file (see [docs/tool-specs.md](docs/tool-specs.md)). The spec defines the complete tool set — kinds, per-tool `enabled` flag, handler references, `preferred_fields` — not just per-tool description/inputSchema. Hot-reloaded (watcher + mtime fallback); first-load failure aborts startup. |
 | `SIEBEL_TOOLS_SPEC_WATCH` | `true` | Start a file watcher that pushes spec changes to the registry as they happen (debounced ~300 ms; atomic temp-file + rename replaces detected). Set `false` to rely on the lazy mtime check on the next `tools/list` / `GET /tools`. Python handler modules are not watched — a code change needs a restart. |
-| *(per-tool `enabled`)* | `true` (default) | The single on/off switch for a tool, authored in the spec (not an env var). The bundled spec sets `enabled: false` on the 7 write/delete/external tools — `create_record`, `create_record_json`, `create_child_record`, `update_record`, `upload_attachment`, `delete_record`, `web_search` — so the server is read-only by default. Flip `enabled: true` on an entry in an override spec (`SIEBEL_TOOLS_SPEC_PATH`) to turn a tool on. |
+| *(per-tool `enabled`)* | *(mandatory)* | The single on/off switch for a tool, authored in the spec (not an env var). Mandatory on every entry — there is no silent default, so a deployer opts in to each tool explicitly. The bundled spec sets `enabled: false` on the 7 write/delete/external tools — `create_record`, `create_record_json`, `create_child_record`, `update_record`, `upload_attachment`, `delete_record`, `web_search` — and `enabled: true` on the rest, so the server is read-only by default. Flip `enabled: true` on an entry in an override spec (`SIEBEL_TOOLS_SPEC_PATH`) to turn a tool on. |
 | `SIEBEL_SYSTEM_PROMPT_PATH` | *(unset → bundled)* | Override the bundled Siebel system prompt |
-| `MCP_API_TOKEN` | *(unset → no auth)* | Bearer token guard on the HTTP server |
+| `MCP_API_TOKEN` | *(unset → no auth)* | Bearer token guard on the HTTP/SSE server. `SIEBEL_API_TOKEN` is an alias for the same guard. |
 
 The bundled system prompt lives at `mcp_siebel/prompts/siebel-system.md`. Point
 `SIEBEL_SYSTEM_PROMPT_PATH` at your own file to replace it entirely.

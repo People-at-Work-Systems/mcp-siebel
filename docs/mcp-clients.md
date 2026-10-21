@@ -33,7 +33,8 @@ The stdio server is the default and needs no extra deps. The HTTP/SSE server
 | `SIEBEL_MCP_MODE` | no | `standalone` (default — the server authenticates each user) or `gateway` (SSO header proxy) |
 | `SIEBEL_TOOLS_SPEC_PATH` | no | Override the bundled tool spec (see [tool-specs.md](tool-specs.md)) |
 | `SIEBEL_TOOLS_SPEC_WATCH` | no | `true` (default) — hot-reload spec edits; `false` to rely on the lazy mtime check |
-| `MCP_API_TOKEN` | no | Bearer-token guard on the HTTP/SSE server (unset = no auth) |
+| `MCP_API_TOKEN` | no | Bearer-token guard on the HTTP/SSE server (unset = no auth). `SIEBEL_API_TOKEN` is an alias for the same guard. |
+| `SIEBEL_VERIFY_TLS` | no | `true` (default) — verify the Siebel server certificate. Against a self-signed dev Siebel, set `SIEBEL_CA_BUNDLE` to trust it, or `false` to disable verification (dev only). |
 
 `command` can be any of:
 - the venv binary directly: `/path/to/mcp-siebel/.venv/bin/mcp-siebel`
