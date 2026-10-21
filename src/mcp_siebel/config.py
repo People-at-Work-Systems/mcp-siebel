@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,6 +12,10 @@ class AppSettings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        # Field names are also accepted as population sources (init kwarg or
+        # prefix env var) alongside any explicit alias. Without this, an aliased
+        # field could only be set via its alias.
+        populate_by_name=True,
     )
 
     # -- Mode -----------------------------------------------------------------
@@ -83,7 +87,14 @@ class AppSettings(BaseSettings):
 
     # -- Secrets (prefixed to stay consistent with SIEBEL_ namespace) ---------
     brave_search_api_key: str = ""
-    api_token: str = ""
+    # Bearer token guarding the HTTP/SSE server. Accepts both MCP_API_TOKEN
+    # (the documented name) and SIEBEL_API_TOKEN (the prefixed form) so existing
+    # deployments keep working. Empty = no auth (server is open; a startup
+    # warning is logged).
+    api_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("MCP_API_TOKEN", "SIEBEL_API_TOKEN"),
+    )
 
     @model_validator(mode="after")
     def _compose_url(self) -> AppSettings:

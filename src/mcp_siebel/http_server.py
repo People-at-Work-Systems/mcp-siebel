@@ -115,7 +115,11 @@ def _use_json_logging(service: str) -> None:
 
 _use_json_logging("mcp-siebel")
 
+log = logging.getLogger("mcp-siebel")
+
 settings = load_settings()
+if not settings.api_token:
+    log.warning("MCP_API_TOKEN not set — HTTP/SSE server is unauthenticated.")
 sessions = SessionStore(settings.session_timeout_ms / 1000)
 registry = ToolRegistry(settings)
 # Spec watcher: started on app startup, stopped on shutdown (see _lifespan).
@@ -195,6 +199,23 @@ Instrumentator().instrument(app).expose(app)
 app.add_middleware(CorrelationMiddleware)
 
 
+@app.middleware("http")
+async def _guard_sse_transport(request: Request, call_next):  # type: ignore[no-untyped-def]
+    """Enforce the API token on the MCP SSE transport endpoints. ``/sse`` also
+    carries the ``require_api_token`` route dependency, but ``/messages/`` is a
+    mounted Starlette sub-app (``SseServerTransport.handle_post_message``) that
+    can't take FastAPI route dependencies, so the token is enforced here for any
+    path starting with ``/sse`` or ``/messages/``. Returns 401 directly on
+    mismatch (raising HTTPException inside middleware would surface as 500)."""
+    path = request.url.path
+    if path == "/sse" or path.startswith("/messages/"):
+        try:
+            _check_api_token(request.headers.get("authorization"))
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return await call_next(request)
+
+
 class SessionCreateRequest(BaseModel):
     username: str
     password: str | None = None
@@ -210,11 +231,20 @@ class ToolCallRequest(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
-async def require_api_token(authorization: str | None = Header(default=None)) -> None:
+def _check_api_token(authorization: str | None) -> None:
+    """Shared body of the API-token guard. No-op when no token is configured
+    (server is intentionally open); otherwise require ``Authorization: Bearer
+    <token>``. Raises HTTPException(401) on mismatch. Used by the
+    ``require_api_token`` route dependency and by the SSE-transport middleware
+    (the mounted ``/messages/`` sub-app can't take route dependencies)."""
     if not settings.api_token:
         return
     if authorization != f"Bearer {settings.api_token}":
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+async def require_api_token(authorization: str | None = Header(default=None)) -> None:
+    _check_api_token(authorization)
 
 
 @app.get("/health")
@@ -295,7 +325,7 @@ async def call_mcp_tool(tool_name: str, request: ToolCallRequest) -> dict[str, A
 
 
 # MCP SSE transport endpoints — used by Claude Desktop
-@app.get("/sse")
+@app.get("/sse", dependencies=[Depends(require_api_token)])
 async def sse_endpoint(request: Request) -> None:
     async with _sse.connect_sse(request.scope, request.receive, request._send) as streams:
         await _mcp.run(
