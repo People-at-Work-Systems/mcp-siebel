@@ -15,8 +15,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from mcp_siebel.config import AppSettings
+from mcp_siebel.handlers.auth import _authenticate
 from mcp_siebel.siebel_client import SiebelError
-from mcp_siebel.tools import SessionContext, ToolContext, _authenticate
+from mcp_siebel.tools import SessionContext, ToolContext
 
 
 def _ctx(**settings_overrides) -> ToolContext:
@@ -35,7 +36,7 @@ async def test_probe_failure_returns_auth_failed_not_authenticated():
     client = AsyncMock()
     client.query = AsyncMock(side_effect=SiebelError("login rejected", 500, '{"ERROR":"...SBL-DAT-00569..."}'))
 
-    with patch("mcp_siebel.tools._sso_client", return_value=client):
+    with patch("mcp_siebel.handlers.auth._sso_client", return_value=client):
         result = await _authenticate({"username": "MSTERN", "password": "MSTERN"}, ctx)
 
     assert result.get("isError") is True
@@ -54,7 +55,7 @@ async def test_probe_transport_error_returns_could_not_reach():
     client = AsyncMock()
     client.query = AsyncMock(side_effect=RuntimeError("connection reset"))
 
-    with patch("mcp_siebel.tools._sso_client", return_value=client):
+    with patch("mcp_siebel.handlers.auth._sso_client", return_value=client):
         result = await _authenticate({"username": "MSTERN", "password": "MSTERN"}, ctx)
 
     assert result.get("isError") is True
@@ -70,7 +71,7 @@ async def test_probe_success_authenticates_and_reuses_probed_client():
     client = AsyncMock()
     client.query = AsyncMock(return_value=object())  # doesn't raise => success
 
-    with patch("mcp_siebel.tools._sso_client", return_value=client) as mock_sso:
+    with patch("mcp_siebel.handlers.auth._sso_client", return_value=client) as mock_sso:
         result = await _authenticate({"username": "MSTERN", "password": "MSTERN"}, ctx)
 
     assert result.get("isError") is None
@@ -89,7 +90,7 @@ async def test_probe_uses_configured_business_object_component():
     client = AsyncMock()
     client.query = AsyncMock(return_value=object())
 
-    with patch("mcp_siebel.tools._sso_client", return_value=client):
+    with patch("mcp_siebel.handlers.auth._sso_client", return_value=client):
         await _authenticate({"username": "MSTERN", "password": "MSTERN"}, ctx)
 
     assert client.query.await_args.args == ("Opportunity", "Opportunity")

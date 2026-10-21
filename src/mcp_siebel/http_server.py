@@ -23,8 +23,10 @@ Point Claude Desktop at it via mcp-remote:
       }
     }
 
-The first tool to call is ``authenticate`` with username/password to obtain a
-``session_id`` required by all subsequent Siebel tools.
+The first tool to call is the session-establishment tool (the spec entry marked
+``establishes_session`` — see ``registry.session_tool_name``) with
+username/password to obtain a ``session_id`` required by all subsequent Siebel
+tools.
 
 REST surface: /tools, /sessions, /tools/{name}, /mcp/tools, /mcp/call/{name},
 /health, /metrics.
@@ -35,11 +37,13 @@ from __future__ import annotations
 import json
 import logging
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
-from mcp.server import Server, ServerRequestContext
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from mcp.server import NotificationOptions, Server, ServerRequestContext
 from mcp.server.sse import SseServerTransport
 from mcp.types import (
     CallToolRequestParams,
@@ -52,11 +56,14 @@ from mcp.types import (
 )
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
-from starlette.requests import Request
 
+from . import __version__
 from .config import load_settings
 from .context import CorrelationMiddleware, session_id_var, turn_id_var
+from .notifications import McpSessionBroadcaster, SseSubscribers, make_spec_changed_hook, sse_events_stream
+from .system_prompt import load_instructions
 from .tools import SessionStore, ToolRegistry
+from .watcher import ToolSpecWatcher
 
 
 class _AccessLogFilter(logging.Filter):
@@ -109,9 +116,20 @@ def _use_json_logging(service: str) -> None:
 
 _use_json_logging("mcp-siebel")
 
+log = logging.getLogger("mcp-siebel")
+
 settings = load_settings()
+if not settings.api_token:
+    log.warning("MCP_API_TOKEN not set — HTTP/SSE server is unauthenticated.")
 sessions = SessionStore(settings.session_timeout_ms / 1000)
 registry = ToolRegistry(settings)
+# Spec watcher: started on app startup, stopped on shutdown (see _lifespan).
+watcher = ToolSpecWatcher(registry, settings)
+# Spec-change fan-out: MCP sessions get tools/list_changed; REST /tools/events
+# SSE clients get a tools_changed event with the new spec_version.
+broadcaster = McpSessionBroadcaster()
+sse_subs = SseSubscribers()
+registry.subscribe(make_spec_changed_hook(broadcaster, sse_subs))
 started_at = time.monotonic()
 
 
@@ -125,6 +143,7 @@ _sse = SseServerTransport("/messages/")
 async def _list_tools(
     ctx: ServerRequestContext[Any], params: PaginatedRequestParams | None
 ) -> ListToolsResult:
+    broadcaster.add(getattr(ctx, "session", None))  # capture for tools/list_changed
     return ListToolsResult(
         tools=[
             Tool(name=t["name"], description=t["description"], input_schema=t["input_schema"])
@@ -136,35 +155,71 @@ async def _list_tools(
 async def _call_tool(
     ctx: ServerRequestContext[Any], params: CallToolRequestParams
 ) -> CallToolResult:
+    broadcaster.add(getattr(ctx, "session", None))  # capture for tools/list_changed
     name = params.name
     args = dict(params.arguments or {})
     session_id = args.pop("session_id", None)
     session = sessions.get(session_id)
-    if name == "authenticate" and session is None:
+    if name == registry.session_tool_name:
         session = sessions.create()
     result = await registry.call(name, args, session)
-    if name == "authenticate" and session is not None:
+    if name == registry.session_tool_name and session is not None:
         result = {**result, "session_id": session.session_id}
     content = result.get("content") or [{"type": "text", "text": str(result)}]
     texts: list[ContentBlock] = [TextContent(type="text", text=c["text"]) for c in content if c.get("type") == "text"]
     return CallToolResult(content=texts, is_error=bool(result.get("isError")))
 
 
-_mcp = Server("siebel-crm", on_list_tools=_list_tools, on_call_tool=_call_tool)
+# LLM-facing server instructions, delivered to the MCP client in the Initialize
+# handshake — the same guidance stdio delivers, now over SSE/REST too. Loaded
+# once at import (not hot-reloaded — a change needs a restart).
+_INSTRUCTIONS = load_instructions(registry.session_tool_name)
+
+_mcp = Server("siebel-crm", instructions=_INSTRUCTIONS, on_list_tools=_list_tools, on_call_tool=_call_tool)
 
 
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
 
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Start the spec watcher on the server's loop; stop it cleanly on shutdown
+    # so no asyncio task leaks (and tests see no dangling-task warnings).
+    watcher.start()
+    try:
+        yield
+    finally:
+        await watcher.stop()
+
+
 app = FastAPI(
     title="MCP Siebel",
     description="MCP-style tool server for Oracle Siebel 26.2+",
-    version="0.1.0",
+    version=__version__,
+    lifespan=_lifespan,
 )
 
 Instrumentator().instrument(app).expose(app)
 app.add_middleware(CorrelationMiddleware)
+
+
+@app.middleware("http")
+async def _guard_sse_transport(request: Request, call_next):  # type: ignore[no-untyped-def]
+    """Enforce the API token on the MCP SSE transport endpoints. ``/sse`` also
+    carries the ``require_api_token`` route dependency, but ``/messages/`` is a
+    mounted Starlette sub-app (``SseServerTransport.handle_post_message``) that
+    can't take FastAPI route dependencies, so the token is enforced here for any
+    path starting with ``/sse`` or ``/messages/``. Returns 401 directly on
+    mismatch (raising HTTPException inside middleware would surface as 500)."""
+    path = request.url.path
+    if path == "/sse" or path.startswith("/messages/"):
+        try:
+            _check_api_token(request.headers.get("authorization"))
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return await call_next(request)
 
 
 class SessionCreateRequest(BaseModel):
@@ -182,11 +237,20 @@ class ToolCallRequest(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
-async def require_api_token(authorization: str | None = Header(default=None)) -> None:
+def _check_api_token(authorization: str | None) -> None:
+    """Shared body of the API-token guard. No-op when no token is configured
+    (server is intentionally open); otherwise require ``Authorization: Bearer
+    <token>``. Raises HTTPException(401) on mismatch. Used by the
+    ``require_api_token`` route dependency and by the SSE-transport middleware
+    (the mounted ``/messages/`` sub-app can't take route dependencies)."""
     if not settings.api_token:
         return
     if authorization != f"Bearer {settings.api_token}":
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+async def require_api_token(authorization: str | None = Header(default=None)) -> None:
+    _check_api_token(authorization)
 
 
 @app.get("/health")
@@ -196,6 +260,7 @@ async def health() -> dict[str, Any]:
         "mode": settings.mcp_mode,
         "uptime": int(time.monotonic() - started_at),
         "sessions": sessions.count(),
+        **registry.health_status(),
     }
 
 
@@ -209,20 +274,40 @@ async def get_session(session_id: str) -> dict[str, Any]:
 
 
 @app.get("/tools", dependencies=[Depends(require_api_token)])
-async def list_tools() -> dict[str, Any]:
-    return {"tools": registry.list_tools()}
+async def list_tools(request: Request) -> Response:
+    """The exposed tool list, ETagged with the spec_version. If-None-Match that
+    matches the current version -> 304. The body carries spec_version too."""
+    snap = registry.snapshot()
+    etag = f'"{snap.spec_version}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    return JSONResponse(
+        content={"tools": snap.exposed_tools, "spec_version": snap.spec_version},
+        headers={"ETag": etag},
+    )
 
 
 @app.get("/mcp/tools", dependencies=[Depends(require_api_token)])
-async def list_mcp_tools() -> dict[str, Any]:
-    return await list_tools()
+async def list_mcp_tools(request: Request) -> Response:
+    return await list_tools(request)
+
+
+@app.get("/tools/events", dependencies=[Depends(require_api_token)])
+async def tools_events() -> StreamingResponse:
+    """SSE stream of tools_changed events (one per real spec change, with the
+    new spec_version) plus a periodic keepalive. Same auth as GET /tools."""
+    return StreamingResponse(
+        sse_events_stream(registry, sse_subs),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/sessions", dependencies=[Depends(require_api_token)])
 async def create_session(request: SessionCreateRequest) -> SessionCreateResponse:
     session = sessions.create()
     result = await registry.call(
-        "authenticate",
+        registry.session_tool_name,
         {"username": request.username, "password": request.password},
         session,
     )
@@ -232,10 +317,10 @@ async def create_session(request: SessionCreateRequest) -> SessionCreateResponse
 @app.post("/tools/{tool_name}", dependencies=[Depends(require_api_token)])
 async def call_tool(tool_name: str, request: ToolCallRequest) -> dict[str, Any]:
     session = sessions.get(request.session_id)
-    if tool_name == "authenticate" and session is None:
+    if tool_name == registry.session_tool_name:
         session = sessions.create()
     result = await registry.call(tool_name, request.arguments, session)
-    if tool_name == "authenticate" and session is not None:
+    if tool_name == registry.session_tool_name and session is not None:
         result = {**result, "session_id": session.session_id}
     return result
 
@@ -246,10 +331,14 @@ async def call_mcp_tool(tool_name: str, request: ToolCallRequest) -> dict[str, A
 
 
 # MCP SSE transport endpoints — used by Claude Desktop
-@app.get("/sse")
+@app.get("/sse", dependencies=[Depends(require_api_token)])
 async def sse_endpoint(request: Request) -> None:
     async with _sse.connect_sse(request.scope, request.receive, request._send) as streams:
-        await _mcp.run(streams[0], streams[1], _mcp.create_initialization_options())
+        await _mcp.run(
+            streams[0],
+            streams[1],
+            _mcp.create_initialization_options(NotificationOptions(tools_changed=True)),
+        )
 
 
 app.mount("/messages/", app=_sse.handle_post_message)

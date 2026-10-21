@@ -18,7 +18,7 @@ deployment** will likely require adaptation work on **both** sides:
 
 - on the **Siebel side** — REST-enabling the business objects/components you
   want to query, granting the connecting identity the right responsibilities,
-  and configuring SSO/OAuth;
+  and configuring SSO;
 - on the **mcp-siebel side** — field names, business-component assumptions
   baked into the tools and the bundled system prompt, and the auth-probe
   BO/BC may all need adjustment to match your Siebel.
@@ -31,10 +31,8 @@ Do not expect it to work unmodified against a production-customized Siebel.
   interface).
 - Network access from this server to the Siebel REST endpoint
   (`SIEBEL_BASE_URL`, or `SIEBEL_HOST` + `SIEBEL_SCHEME`).
-- A Siebel identity: either **SSO header** auth (`SIEBEL_SSO_HEADER`, default
-  `SBL_USER`) in standalone mode, or **OAuth/Keycloak**
-  (`SIEBEL_OAUTH_CLIENT_ID` / `SIEBEL_OAUTH_CLIENT_SECRET` /
-  `SIEBEL_KEYCLOAK_TOKEN_URL`).
+- A Siebel identity: **SSO header** auth (`SIEBEL_SSO_HEADER`, default
+  `SBL_USER`) in standalone mode.
 - The business objects/components the tools query must be **REST-enabled** and
   accessible to that identity.
 - An **auth-probe BO/BC** (`SIEBEL_PROBE_BUSINESS_OBJECT` /
@@ -42,27 +40,47 @@ Do not expect it to work unmodified against a production-customized Siebel.
   REST-enabled **and** not readable by a bogus/guest identity — `authenticate`
   uses it to validate the SSO header. Override per instance if `Account` is
   guest-readable on your Siebel.
-- *(Optional)* a **Brave Search API key** (`SIEBEL_BRAVE_SEARCH_API_KEY`) if you
-  want the `web_search` tool to function.
+- *(Optional)* a **Brave Search API key** (`SIEBEL_BRAVE_SEARCH_API_KEY`).
+  `web_search` is `enabled: false` in the bundled spec — flip `enabled: true`
+  on its entry in an override spec (`SIEBEL_TOOLS_SPEC_PATH`) to turn it on. It
+  sends free text to an outside service, so it stays off by default.
 - *(Optional)* a **bearer token** (`MCP_API_TOKEN`) to guard the HTTP/SSE server.
 
 ## Install
 
+The package is not yet on PyPI — install from the Git repo. (Once the first
+`v*` tag is cut, the release workflow publishes to PyPI and these collapse to
+`pip install mcp-siebel` / `pip install mcp-siebel[http]`.)
+
 ```bash
 # stdio transport (Claude Desktop) — no fastapi needed
-pip install mcp-siebel
+pip install git+https://github.com/People-at-Work-Systems/mcp-siebel.git
+# or with uv
+uv pip install git+https://github.com/People-at-Work-Systems/mcp-siebel.git
 
 # stdio + HTTP/SSE server
-pip install mcp-siebel[http]
+pip install "git+https://github.com/People-at-Work-Systems/mcp-siebel.git#egg=mcp-siebel[http]"
+uv pip install "mcp-siebel[http] @ git+https://github.com/People-at-Work-Systems/mcp-siebel.git"
+```
+
+To get the `mcp-siebel` / `mcp-siebel-http` console scripts on `PATH` as a uv
+tool:
+
+```bash
+uv tool install mcp-siebel --from git+https://github.com/People-at-Work-Systems/mcp-siebel.git
 ```
 
 > **Requires `mcp>=2.0,<3`.** The server uses the mcp 2.x lowlevel `Server`
 > API (`on_list_tools` / `on_call_tool` constructor kwargs).
 >
 > Note: the `mcp` SDK itself depends on `uvicorn` and `starlette` (core deps,
-> not extras), so a base `pip install mcp-siebel` does pull them transitively.
-> The `[http]` extra gates only `fastapi` and `prometheus-fastapi-instrumentator`
-> — the deps the HTTP/SSE server adds on top of what `mcp` already brings.
+> not extras), so a base install does pull them transitively. The `[http]` extra
+> gates only `fastapi` and `prometheus-fastapi-instrumentator` — the deps the
+> HTTP/SSE server adds on top of what `mcp` already brings.
+
+> Ready-to-paste MCP server entries for Claude Desktop, Claude Code, Cursor,
+> VS Code + Copilot, Cline, Zed, and ChatGPT (remote) live in
+> [docs/mcp-clients.md](docs/mcp-clients.md).
 
 ## Quick start — stdio (Claude Desktop)
 
@@ -113,30 +131,122 @@ REST surface: `GET /health`, `GET /tools`, `POST /tools/{name}`,
 ## Configuration
 
 All config is environment-variable driven (`SIEBEL_` prefix; `MCP_API_TOKEN`
-guards the HTTP server if set). See [`.env.example`](.env.example) for the full
-list. The essentials:
+guards the HTTP server if set). [`.env.example`](.env.example) is the canonical
+list with a per-variable comment; the tables below are the complete reference.
+Client-setup specifics: [docs/mcp-clients.md](docs/mcp-clients.md).
+
+### Connection
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `SIEBEL_BASE_URL` | *(empty — required)* | Siebel REST endpoint, e.g. `https://siebel.example.com/siebel/v1.0` |
 | `SIEBEL_HOST` | *(empty)* | Alternative to `BASE_URL`: build the URL from host + `SIEBEL_SCHEME` |
 | `SIEBEL_SCHEME` | `http` | Used only when composing from `SIEBEL_HOST` |
-| `SIEBEL_MCP_MODE` | `standalone` | Auth mode |
+
+### Mode & identity
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SIEBEL_MCP_MODE` | `standalone` | Auth mode (the server authenticates each user; `gateway` is an SSO-header proxy) |
 | `SIEBEL_SSO_HEADER` | `SBL_USER` | SSO header name (standalone mode) |
-| `SIEBEL_ALLOW_WRITE` | `false` | Enable the write tools (create/update/create-child/upload-attachment). Default off — read-only. |
-| `SIEBEL_ALLOW_DELETE` | `false` | Enable `delete_record`. Default off — read-only. |
-| `SIEBEL_DISABLED_TOOLS` | *(empty)* | Additional comma-separated tool names to disable on top of the two gates |
-| `SIEBEL_SYSTEM_PROMPT_PATH` | *(unset → bundled)* | Override the bundled Siebel system prompt |
-| `MCP_API_TOKEN` | *(unset → no auth)* | Bearer token guard on the HTTP server |
+| `SIEBEL_LANGUAGE_CODE` | `ENU` | Siebel language code passed on data calls |
 
-The bundled system prompt lives at `mcp_siebel/prompts/siebel-system.md`. Point
-`SIEBEL_SYSTEM_PROMPT_PATH` at your own file to replace it entirely.
+### TLS
 
-**Read-only by default.** With `SIEBEL_ALLOW_WRITE` and `SIEBEL_ALLOW_DELETE`
-both `false` (the default), the write and delete tools are hidden and refused.
-Set the relevant flag to `true` to enable them. `SIEBEL_DISABLED_TOOLS` disables
-additional individual tools on top. Discover the current tool set from the
+| Variable | Default | Purpose |
+|---|---|---|
+| `SIEBEL_VERIFY_TLS` | `true` | Verify the Siebel server TLS certificate. Against a self-signed dev Siebel, set `SIEBEL_CA_BUNDLE` to trust it (verification stays on) or set this to `false` (dev only — disables verification). |
+| `SIEBEL_CA_BUNDLE` | *(unset → OS roots)* | Path to a CA bundle file used to verify the Siebel certificate. Overrides `SIEBEL_VERIFY_TLS` when set, so a self-signed cert can be trusted with verification still on. |
+
+### Siebel tuning
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SIEBEL_DEFAULT_PAGE_SIZE` | `20` | Default page size for paged data calls |
+| `SIEBEL_REQUEST_TIMEOUT_MS` | `30000` | Per-request timeout for Siebel REST calls |
+| `SIEBEL_MAX_CONCURRENT_REQUESTS` | `5` | Max concurrent outbound Siebel requests |
+| `SIEBEL_MAX_QUEUE_DEPTH` | `50` | Max requests queued past the concurrency cap |
+| `SIEBEL_AGGREGATE_PAGE_SIZE` | `100` | Page size for the aggregate loop |
+| `SIEBEL_AGGREGATE_MAX_PAGES` | `500` | Page cap for the aggregate loop |
+
+### Auth probe (standalone mode)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SIEBEL_PROBE_BUSINESS_OBJECT` | `Account` | BO `authenticate` probes with a page_size=1 query to validate the SSO header. Must be REST-enabled **and** not readable by a bogus/guest identity. |
+| `SIEBEL_PROBE_BUSINESS_COMPONENT` | `Account` | BC for the auth probe (same constraints) |
+
+### Session lifetime
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SIEBEL_SESSION_TIMEOUT_MS` | `1800000` | Absolute per-session TTL; must exceed the caller's session-cache TTL so the caller re-authenticates before this server's session dies |
+
+### Demo
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SIEBEL_DEMO_ENABLED` | `false` | Serve sample data without any Siebel I/O (development/demo only) |
+
+### Tools & system prompt
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SIEBEL_TOOLS_SPEC_PATH` | *(unset → bundled)* | Override the tool-spec JSON file (see [docs/tool-specs.md](docs/tool-specs.md)). The spec defines the complete tool set — kinds, per-tool `enabled` flag, handler references, `preferred_fields` — not just per-tool description/inputSchema. Hot-reloaded (watcher + mtime fallback); first-load failure aborts startup. |
+| `SIEBEL_TOOLS_SPEC_WATCH` | `true` | Start a file watcher that pushes spec changes to the registry as they happen (debounced ~300 ms; atomic temp-file + rename replaces detected). Set `false` to rely on the lazy mtime check on the next `tools/list` / `GET /tools`. Python handler modules are not watched — a code change needs a restart. |
+| `SIEBEL_SYSTEM_PROMPT_PATH` | *(unset → bundled)* | Override the bundled Siebel system prompt. See [System prompt](#system-prompt-siebel_system_prompt_path). |
+| *(per-tool `enabled`)* | *(mandatory)* | The single on/off switch for a tool, authored in the spec (not an env var). Mandatory on every entry — there is no silent default, so a deployer opts in to each tool explicitly. The bundled spec sets `enabled: false` on the 7 write/delete/external tools — `create_record`, `create_record_json`, `create_child_record`, `update_record`, `upload_attachment`, `delete_record`, `web_search` — and `enabled: true` on the rest, so the server is read-only by default. Flip `enabled: true` on an entry in an override spec (`SIEBEL_TOOLS_SPEC_PATH`) to turn a tool on. |
+
+### Auth & secrets
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MCP_API_TOKEN` | *(unset → no auth)* | Bearer token guard on the HTTP/SSE server. `SIEBEL_API_TOKEN` is an alias for the same guard. |
+| `SIEBEL_BRAVE_SEARCH_API_KEY` | *(empty)* | Brave Search API key (only used by the `web_search` tool, which is `enabled: false` by default) |
+
+**Read-only by default.** The bundled spec sets `enabled: false` on its 7
+write/delete/external tools — `create_record`, `create_record_json`,
+`create_child_record`, `update_record`, `upload_attachment`, `delete_record`,
+`web_search` — so they are hidden and refused. To turn one on, flip
+`enabled: true` on its entry in an override spec pointed at by
+`SIEBEL_TOOLS_SPEC_PATH` — no env var. Discover the current tool set from the
 server itself (`list_tools` over stdio, or `GET /tools` on the HTTP server).
+
+> The tool set is defined by a JSON spec file — `mcp_siebel/specs/tool_specs.json`
+> by default, overridable with `SIEBEL_TOOLS_SPEC_PATH`. The spec defines the
+> complete tool set (kinds, per-tool `enabled` flag, handler references,
+> `preferred_fields`), not just per-tool description/inputSchema. A spec edit is
+> hot-reloaded: a
+> `watchfiles` watcher (`SIEBEL_TOOLS_SPEC_WATCH`, default on) pushes the change
+> to connected clients — MCP clients get `notifications/tools/list_changed` (a
+> hint; not every client re-lists immediately), and HTTP REST clients get an
+> `ETag`/`If-None-Match`→304 on `GET /tools` and a `tools_changed` SSE event on
+> `GET /tools/events`. A failed reload sends nothing and keeps the last valid set.
+> See [docs/tool-specs.md](docs/tool-specs.md) for the file format, every tool
+> kind, the per-tool `enabled` flag, bind/`allowed_fields`/`searchspec_template`,
+> how to add a tool (JSON-only or via a `python` handler), and the full
+> hot-reload semantics.
+
+## System prompt (`SIEBEL_SYSTEM_PROMPT_PATH`)
+
+The system prompt is **LLM-facing instructions, not an operator doc**: the file's
+text becomes the MCP server's `instructions` field, delivered to the client in
+the `Initialize` handshake, so the model sees it as server-level guidance for the
+session. The bundled default lives at
+`mcp_siebel/prompts/siebel-system.md` ("You are a Siebel CRM assistant…").
+
+- **Both transports deliver it** — stdio (`mcp-siebel`) and HTTP/SSE
+  (`mcp-siebel-http` via `/sse`).
+- **Scenarios:**
+  - *unset* → the bundled `prompts/siebel-system.md` is used.
+  - *set to a custom file* → that file is used **verbatim**, except the bundled
+    `## Authentication` section is rewritten to the standalone session-id flow
+    (naming the session tool) **only if** the file contains that exact anchor;
+    otherwise the file is used as-is, with whatever auth guidance it already has.
+  - *set to a non-existent/unreadable file* → the bundled prompt is used and a
+    startup warning is logged (non-fatal; the server still starts).
+- **Read once at process start** — not hot-reloaded. A change needs a restart,
+  unlike `SIEBEL_TOOLS_SPEC_PATH`.
 
 ## Development
 

@@ -384,27 +384,44 @@ SIEBEL_SESSION_TIMEOUT_MS=1800000
 SIEBEL_PROBE_BUSINESS_OBJECT=Account
 SIEBEL_PROBE_BUSINESS_COMPONENT=Account
 
-# Tools — comma-separated list to disable
-SIEBEL_DISABLED_TOOLS=delete_record
+# Read-only by default via the bundled spec: the 7 write/delete/external
+# tools (create_record, create_record_json, create_child_record, update_record,
+# upload_attachment, delete_record, web_search) carry "enabled": false in
+# mcp_siebel/specs/tool_specs.json. To turn one on, flip "enabled": true on its
+# entry in an override spec pointed at by SIEBEL_TOOLS_SPEC_PATH — no env var.
+# (web_search sends free text to Brave; it stays off by default so customer
+# data can't leave for an outside service without an explicit opt-in.)
+
+# TLS verification for outbound calls to Siebel (default on). Against a
+# self-signed dev Siebel, point SIEBEL_CA_BUNDLE at the CA bundle (verification
+# stays on) or set SIEBEL_VERIFY_TLS=false (dev only — disables verification).
+# SIEBEL_VERIFY_TLS=true
+# SIEBEL_CA_BUNDLE=
 
 # Optional bundled-prompt override
 # SIEBEL_SYSTEM_PROMPT_PATH=/path/to/your-siebel-system.md
 
-# OAuth (optional — for Siebel OAuth/Keycloak auth mode)
-# SIEBEL_OAUTH_CLIENT_ID=
-# SIEBEL_OAUTH_CLIENT_SECRET=
-# SIEBEL_KEYCLOAK_TOKEN_URL=https://keycloak.example.com/realms/yourrealm/protocol/openid-connect/token
-
-# Optional bearer-token guard on the HTTP server (unset = no auth)
+# Optional bearer-token guard on the HTTP/SSE server (unset = no auth). Both
+# names populate the same guard; MCP_API_TOKEN is the documented name and
+# SIEBEL_API_TOKEN is kept for compatibility with the SIEBEL_ namespace.
 # MCP_API_TOKEN=
+# SIEBEL_API_TOKEN=
 
 # Optional extras
 # SIEBEL_BRAVE_SEARCH_API_KEY=
-# SIEBEL_API_TOKEN=
 # SIEBEL_DEMO_ENABLED=false
 ```
 
-> **Verify against `app/config.py`** before finalizing — every `AppSettings` field maps to a `SIEBEL_*` env var (prefix `SIEBEL_`, except `disabled_tools_raw` which uses explicit alias `SIEBEL_DISABLED_TOOLS`). `MCP_API_TOKEN` is read outside `AppSettings` (in `main.py`/`mcp_stdio.py`); keep it. The list above was derived from the `config.py` read on 2026-10-13; if fields were added since, add them here.
+> **Verify against `src/mcp_siebel/config.py` before finalizing** — every
+> `AppSettings` field maps to a `SIEBEL_*` env var (prefix `SIEBEL_`,
+> `populate_by_name=True`). `api_token` reads both `MCP_API_TOKEN` and
+> `SIEBEL_API_TOKEN` via `AliasChoices` (it is an `AppSettings` field now, not
+> read outside). `verify_tls`/`ca_bundle` map to `SIEBEL_VERIFY_TLS`/
+> `SIEBEL_CA_BUNDLE`. The `disabled_tools_raw`/`SIEBEL_DISABLED_TOOLS` field was
+> removed in the external-tool-specs refactor — tool gating is the per-tool
+> `enabled` flag in `tool_specs.json` now. The list above was derived from the
+> `config.py` read on 2026-10-13 and updated for the 2026-10-21 remediation;
+> if fields were added since, add them here.
 
 ### 9.4 Secret scan
 
@@ -418,7 +435,7 @@ Before the initial commit, run `gitleaks` (or `trufflehog`) over the entire new 
 4. **Quick start — stdio (Claude Desktop):** a `claude_desktop_config.json` snippet using `"command": "mcp-siebel"` (the console script) + the `env` block with `SIEBEL_BASE_URL` / `SIEBEL_SCHEME`.
 5. **HTTP/SSE mode:** `mcp-siebel-http` (uvicorn on :8201) + the `mcp-remote` bridge config for Claude Desktop (`npx -y mcp-remote http://localhost:8201/sse`).
 6. **Configuration:** the env-var table (same set as `.env.example`), noting `SIEBEL_SYSTEM_PROMPT_PATH` override and the bundled default.
-7. **Tools:** a pointer to the server's own `list_tools` / `--help` rather than a hand-maintained list (the tool set is `SIEBEL_DISABLED_TOOLS`-driven and changes).
+7. **Tools:** a pointer to the server's own `list_tools` / `--help` rather than a hand-maintained list (the tool set is driven by the per-tool `enabled` flag in `tool_specs.json` and changes on hot-reload).
 8. **Development:** `pip install -e .[dev]`, `pytest`, `ruff check`, `mypy`.
 9. **Origin** (§8.4 sentence).
 10. **License:** MIT.
