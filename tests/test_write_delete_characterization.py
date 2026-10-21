@@ -270,8 +270,21 @@ async def test_delete_record_bo_not_found(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_write_tools_unauthenticated_returns_error(tmp_path) -> None:
     reg = _write_registry(tmp_path)
+    # Each tool's args must be schema-valid so registry-level argument
+    # validation lets the call reach the handler's auth gate.
+    valid_args = {
+        "create_record": {"business_object": "Account", "data": {"x": "y"}},
+        "create_record_json": {"business_object": "Account", "data": {"x": "y"}},
+        "update_record": {"business_object": "Account", "id": "1-ABC", "data": {"x": "y"}},
+        "create_child_record": {
+            "business_object": "Account",
+            "parent_id": "1-ABC",
+            "child_business_component": "Contact",
+            "data": {"x": "y"},
+        },
+    }
     for tool in ("create_record", "create_record_json", "update_record", "create_child_record"):
-        resp = await reg.call(tool, {"business_object": "Account", "data": {"x": "y"}}, _session(None))
+        resp = await reg.call(tool, valid_args[tool], _session(None))
         assert resp.get("isError") is True, tool
         assert resp["content"][0]["text"] == "Not authenticated. Call the authenticate tool first."
 

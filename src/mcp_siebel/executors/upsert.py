@@ -113,7 +113,8 @@ async def execute_bc_upsert(args: dict[str, Any], ctx: ToolContext, options: dic
     auth = _require_auth(ctx)
     if isinstance(auth, dict):
         return auth
-    effective = {**(options.get("bind") or {}), **args}
+    # Spec bind wins over caller args — a pinned bind key cannot be overridden.
+    effective = {**args, **(options.get("bind") or {})}
     resolved, bc = await _resolve_bo_bc(effective, auth)
     if not resolved:
         return _text(f'Business Object "{effective["business_object"]}" not found.')

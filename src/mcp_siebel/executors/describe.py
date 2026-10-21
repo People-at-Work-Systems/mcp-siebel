@@ -134,7 +134,8 @@ async def execute_bc_describe(args: dict[str, Any], ctx: ToolContext, options: d
         objects = await auth.cache.get_business_objects()
         return RENDERERS[render]({"business_objects": objects})
 
-    effective = {**(options.get("bind") or {}), **args}
+    # Spec bind wins over caller args — a pinned bind key cannot be overridden.
+    effective = {**args, **(options.get("bind") or {})}
     resolved, bc, raw_bo = await _resolve_business_object(effective, auth)
     if not resolved:
         # The prose variants return _text (informational); the JSON variants

@@ -10,6 +10,7 @@ isError: true (it previously returned _text, which has no isError).
 from __future__ import annotations
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from mcp_siebel.common import _error_result
 from mcp_siebel.config import AppSettings
@@ -23,6 +24,16 @@ def _registry() -> ToolRegistry:
     return ToolRegistry(AppSettings())
 
 
+def _inject(reg: ToolRegistry, name: str, spec: ToolSpec) -> None:
+    """Add a tool to the registry's current snapshot the way the loader does:
+    both the tool map and the per-tool validator. The loader builds validators at
+    load time; a tool injected post-construction must carry one too, or
+    registry.call's argument-validation step has no validator to run."""
+    reg._tools[name] = spec
+    assert reg._snapshot is not None
+    reg._snapshot.validators[name] = Draft202012Validator(spec.input_schema)
+
+
 @pytest.mark.asyncio
 async def test_registry_call_converts_siebel_error_to_iserror_result():
     """A handler raising SiebelError (e.g. SBL-EAI-50257 BC-not-mapped) must
@@ -32,7 +43,7 @@ async def test_registry_call_converts_siebel_error_to_iserror_result():
         raise SiebelError("BC not mapped", 500, '{"ERROR":"...SBL-EAI-50257..."}')
 
     reg = _registry()
-    reg._tools["boom"] = ToolSpec("boom", "d", _SIMPLE_SCHEMA, boom)
+    _inject(reg, "boom", ToolSpec("boom", "d", _SIMPLE_SCHEMA, boom))
 
     result = await reg.call("boom", {}, SessionContext(session_id="s1"))
 
@@ -48,7 +59,7 @@ async def test_registry_call_converts_unexpected_exception_to_iserror_result():
         raise RuntimeError("handler bug")
 
     reg = _registry()
-    reg._tools["kaboom"] = ToolSpec("kaboom", "d", _SIMPLE_SCHEMA, kaboom)
+    _inject(reg, "kaboom", ToolSpec("kaboom", "d", _SIMPLE_SCHEMA, kaboom))
 
     result = await reg.call("kaboom", {}, SessionContext(session_id="s1"))
     assert result.get("isError") is True
@@ -62,7 +73,7 @@ async def test_registry_call_still_returns_successful_result_unchanged():
         return {"content": [{"type": "text", "text": "ok"}]}
 
     reg = _registry()
-    reg._tools["ok"] = ToolSpec("ok", "d", _SIMPLE_SCHEMA, ok)
+    _inject(reg, "ok", ToolSpec("ok", "d", _SIMPLE_SCHEMA, ok))
 
     result = await reg.call("ok", {}, SessionContext(session_id="s1"))
     assert result.get("isError") is None

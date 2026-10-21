@@ -39,7 +39,7 @@ def _make_registry_and_session(query_result: SiebelQueryResult) -> tuple[ToolReg
 
 
 @pytest.mark.asyncio
-async def test_query_data_with_string_offset_does_not_crash():
+async def test_query_data_with_nondefault_offset_does_not_crash():
     result = SiebelQueryResult(
         items=[{"Id": "1", "Name": "Acme"}, {"Id": "2", "Name": "Beta"}],
         total_count=102,
@@ -50,13 +50,14 @@ async def test_query_data_with_string_offset_does_not_crash():
     )
     reg, session, query_mock = _make_registry_and_session(result)
 
-    # This is exactly the shape the LLM sends — every field is a JSON string,
-    # including offset/page_size, per the tool's declared input_schema.
+    # offset/page_size are typed integer in the tool's input_schema; the
+    # registry validates them before dispatch. A non-default offset must still
+    # number the returned records correctly (the original crash regression).
     args = {
         "business_object": "Account",
         "business_component": "Account",
-        "page_size": "2",
-        "offset": "100",
+        "page_size": 2,
+        "offset": 100,
     }
 
     response = await reg.call("query_data", args, session)
@@ -66,12 +67,31 @@ async def test_query_data_with_string_offset_does_not_crash():
     assert "Record 101:" in text
     assert "Record 102:" in text
 
-    # The client must receive real ints, not the raw JSON strings.
+    # The client must receive real ints, not strings.
     _, kwargs = query_mock.call_args
     assert kwargs["offset"] == 100
     assert isinstance(kwargs["offset"], int)
     assert kwargs["page_size"] == 2
     assert isinstance(kwargs["page_size"], int)
+
+
+@pytest.mark.asyncio
+async def test_query_data_with_string_offset_returns_validation_error_not_crash():
+    """The schema types offset/page_size as integer, so a string value is now
+    rejected with a specific argument-validation error (not a crash) — preserving
+    the original 'string offset must not crash' regression under the new
+    validation contract."""
+    reg, session, _ = _make_registry_and_session(
+        SiebelQueryResult(items=[], total_count=0, has_more=False, offset=0, page_size=20)
+    )
+    response = await reg.call(
+        "query_data",
+        {"business_object": "Account", "business_component": "Account", "offset": "100"},
+        session,
+    )
+    assert response.get("isError") is True
+    assert "offset" in response["content"][0]["text"]
+    assert "integer" in response["content"][0]["text"]
 
 
 @pytest.mark.asyncio
@@ -94,7 +114,7 @@ async def test_query_data_with_missing_offset_defaults_to_zero():
 
 
 @pytest.mark.asyncio
-async def test_query_child_records_with_string_offset_does_not_crash():
+async def test_query_child_records_with_nondefault_offset_does_not_crash():
     result = SiebelQueryResult(
         items=[{"Id": "1", "Name": "Contact A"}],
         total_count=51,
@@ -110,8 +130,8 @@ async def test_query_child_records_with_string_offset_does_not_crash():
         "business_component": "Account",
         "parent_id": "1-ABC",
         "child_business_component": "Contact",
-        "page_size": "1",
-        "offset": "50",
+        "page_size": 1,
+        "offset": 50,
     }
 
     response = await reg.call("query_child_records", args, session)

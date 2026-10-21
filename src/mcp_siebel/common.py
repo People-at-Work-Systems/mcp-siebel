@@ -155,3 +155,20 @@ def _validate_fields_arg(raw: Any) -> str | None:
         "comma-separated — or omit 'fields' to use the default set. Do not guess and "
         "do not pass placeholders like '<?>'."
     )
+
+
+def _format_arg_errors(errors: Any) -> str:
+    """Format ``jsonschema.ValidationError`` objects into a specific, user-facing
+    argument-error message (one line per error). Callers wrap this with
+    ``_error`` so the result is an ``isError`` tool result. Mirrors the
+    ``_validate_fields_arg`` ``str``-message pattern: a concrete param/expected/
+    received diagnosis instead of the generic internal mask.
+
+    ``errors`` is typed ``Any`` to keep this module decoupled from jsonschema at
+    import time (it only duck-types ``err.path``, ``err.message``, ``err.instance``).
+    """
+    lines: list[str] = []
+    for err in errors:
+        param = ".".join(str(p) for p in err.path) or "<root>"
+        lines.append(f"{param}: expected {err.message}; received {err.instance!r}")
+    return "Invalid arguments:\n" + "\n".join(lines)

@@ -36,7 +36,9 @@ from dataclasses import dataclass, field
 from importlib.resources import files
 from typing import TYPE_CHECKING, Any
 
-from .common import _error, _error_result
+from jsonschema import Draft202012Validator
+
+from .common import _error, _error_result, _format_arg_errors
 from .config import AppSettings
 from .kinds import _COMMON_FIELDS, _KindSpec, _SpecError
 
@@ -132,6 +134,13 @@ class ToolSnapshot:
     spec_version: int
     content_hash: str
     exposed_tools: list[dict[str, Any]]
+    # One ``Draft202012Validator`` per tool name, built from each tool's resolved
+    # ``input_schema`` at load time. ``call()`` validates ``arguments`` against
+    # ``validators[name]`` before dispatch, returning a specific param/expected/
+    # received error (via ``_format_arg_errors``) instead of forwarding bad args
+    # to the executor or surfacing the internal error mask. Built once per reload
+    # so a request never pays schema-compile cost.
+    validators: dict[str, Any]
 
 
 class SessionStore:
@@ -549,6 +558,19 @@ class ToolRegistry:
         spec edit that only touches a disabled tool is not advertised as a change."""
         return hashlib.sha256(json.dumps(exposed, sort_keys=True).encode("utf-8")).hexdigest()
 
+    def _build_validators(self, built: dict[str, ToolSpec]) -> dict[str, Any]:
+        """Compile a ``Draft202012Validator`` per tool from its resolved
+        ``input_schema``. A malformed schema is a load failure (``_SpecError``)
+        so the keep-last-valid / clear-on-first-load contract applies: a bad
+        schema on reload keeps the previous tools, on first load aborts startup."""
+        validators: dict[str, Any] = {}
+        for tool_name, spec in built.items():
+            try:
+                validators[tool_name] = Draft202012Validator(spec.input_schema)
+            except Exception as exc:  # noqa: BLE001 — any schema-compile failure is a load failure
+                raise _SpecError(f"invalid schema for {tool_name!r}: {exc}") from exc
+        return validators
+
     def _reload_if_changed(self) -> None:
         """Re-read the spec file if its mtime changed since the last load. On a
         successful reload, build a fresh immutable ``ToolSnapshot`` and swap the
@@ -574,6 +596,7 @@ class ToolRegistry:
 
             try:
                 built, preferred_fields, session_name = self._load_valid_tools()
+                validators = self._build_validators(built)
             except _SpecError as exc:
                 # Record this mtime so a broken file isn't re-read on every list
                 # call; it'll be retried when the file changes again.
@@ -606,6 +629,7 @@ class ToolRegistry:
                 spec_version=new_version,
                 content_hash=new_hash,
                 exposed_tools=exposed,
+                validators=validators,
             )
             self._snapshot = snapshot
             self._spec_mtime = mtime
@@ -680,6 +704,14 @@ class ToolRegistry:
             return _error(f'Unknown tool "{name}".')
         if not tool.enabled:
             return _error(f'Tool "{name}" is disabled.')
+        # Validate arguments against the tool's resolved input_schema before
+        # dispatch: a specific param/expected/received error (not the internal
+        # mask) for missing required, wrong type, out-of-range, or unknown
+        # properties. additionalProperties:false (finding 6) also closes the
+        # undeclared-bound-key path of finding 3.
+        errors = sorted(snap.validators[name].iter_errors(arguments), key=lambda e: list(e.path))
+        if errors:
+            return _error(_format_arg_errors(errors))
         log.debug("Calling tool %s with args %s", name, list(arguments.keys()))
         try:
             result = await tool.handler(

@@ -101,7 +101,7 @@ async def test_query_data_has_more_points_at_next_start_row() -> None:
     )
     resp = await reg.call(
         "query_data",
-        {"business_object": "Account", "business_component": "Account", "page_size": "2", "offset": "100"},
+        {"business_object": "Account", "business_component": "Account", "page_size": 2, "offset": 100},
         session,
     )
     assert resp["content"][0]["text"] == (

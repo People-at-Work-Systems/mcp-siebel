@@ -257,8 +257,10 @@ def test_call_injects_session_tool_name_into_context() -> None:
     name, so a not-authenticated call surfaces it without hard-coding. Uses the
     bundled spec (session tool "authenticate") -> byte-identical message."""
     reg = ToolRegistry(AppSettings())
-    # query_data's executor calls _require_auth(ctx) before any arg validation,
-    # so a call with no session returns the not-authenticated message built from
-    # the session-tool name injected by registry.call.
-    result = _run_call(reg, "query_data", {})
+    # query_data's executor calls _require_auth(ctx) before touching Siebel, so a
+    # call with valid args and no session returns the not-authenticated message
+    # built from the session-tool name injected by registry.call. (Args must be
+    # schema-valid so registry-level argument validation lets the call reach the
+    # handler's auth gate.)
+    result = _run_call(reg, "query_data", {"business_object": "Account"})
     assert _result_text(result) == "Not authenticated. Call the authenticate tool first."

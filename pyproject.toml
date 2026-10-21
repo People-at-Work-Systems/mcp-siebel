@@ -26,6 +26,7 @@ dependencies = [
     "pydantic>=2",
     "pydantic-settings>=2",
     "watchfiles>=1.0,<2",  # hot-reload file watcher for tool_specs.json (startable by both transports)
+    "jsonschema>=4.20",  # Draft202012Validator per tool — validates call args at dispatch (finding 6)
 ]
 
 [project.optional-dependencies]

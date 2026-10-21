@@ -244,7 +244,8 @@ async def execute_bc_query(args: dict[str, Any], ctx: ToolContext, options: dict
     # bind = fixed values from the spec; args = the caller's input. They are
     # disjoint (a bound key may not also be an input_schema property), so a plain
     # merge gives the effective argument set.
-    effective = {**(options.get("bind") or {}), **args}
+    # Spec bind wins over caller args — a pinned bind key cannot be overridden.
+    effective = {**args, **(options.get("bind") or {})}
     resolved, bc = await _resolve_bo_bc(effective, auth)
     if not resolved:
         return _text(f'Business Object "{effective["business_object"]}" not found.')

@@ -132,7 +132,13 @@ def test_spec_refs_are_inlined() -> None:
     assert "$ref" not in props["page_size"]
     # the shared definition's type and rich description come through
     assert props["page_size"]["type"] == "integer"
-    assert props["fields"]["type"] == "array"
+    assert props["page_size"]["minimum"] == 1
+    assert props["page_size"]["maximum"] == 100
+    assert props["offset"]["type"] == "integer"
+    assert props["offset"]["minimum"] == 0
+    # fields accepts either a list or a comma-separated string (the tool's
+    # documented contract); items only constrains the array form.
+    assert props["fields"]["type"] == ["array", "string"]
     assert props["fields"].get("items") == {"type": "string"}
     assert "Never pass placeholders" in props["fields"]["description"]
 

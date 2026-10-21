@@ -18,11 +18,11 @@
       "type": "object"
     },
     "fields": {
-      "description": "List of Siebel field names to return, e.g. [\"Name\", \"Status\"]. Use only names returned by describe_business_object for this Business Component; never invent names from general Siebel knowledge. Omit to get the default field set. Never pass placeholders such as '<?>'. If the result contains only Id values, at least one name was invalid: call describe_business_object and retry with valid names.",
+      "description": "List of Siebel field names to return, e.g. [\"Name\", \"Status\"], or a comma-separated string \"Name,Status\". Use only names returned by describe_business_object for this Business Component; never invent names from general Siebel knowledge. Omit to get the default field set. Never pass placeholders such as '<?>'. If the result contains only Id values, at least one name was invalid: call describe_business_object and retry with valid names.",
       "items": {
         "type": "string"
       },
-      "type": "array"
+      "type": ["array", "string"]
     },
     "id": {
       "description": "Siebel row Id of the record, e.g. '1-5GZE'. Take it from a previous tool result; never show it to the user.",
@@ -30,11 +30,14 @@
     },
     "offset": {
       "description": "Zero-based row offset to start paging from, e.g. 100.",
-      "type": "integer"
+      "type": "integer",
+      "minimum": 0
     },
     "page_size": {
       "description": "Page size 1-100, e.g. 20. Default 20.",
-      "type": "integer"
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
     },
     "parent_id": {
       "description": "Siebel row Id of the parent record, e.g. '1-5GZE'. Take it from a previous tool result; never show it to the user.",
@@ -140,7 +143,8 @@
           "field",
           "operation"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "authenticate": {
@@ -163,7 +167,8 @@
           "username",
           "password"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "calculate_date": {
@@ -180,7 +185,8 @@
         "required": [
           "expression"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "count_records": {
@@ -204,7 +210,8 @@
         "required": [
           "business_object"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "create_child_record": {
@@ -238,7 +245,8 @@
           "child_business_component",
           "data"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "create_record": {
@@ -264,7 +272,8 @@
           "business_object",
           "data"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "create_record_json": {
@@ -290,7 +299,8 @@
           "business_object",
           "data"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "delete_record": {
@@ -314,7 +324,8 @@
           "business_object",
           "id"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "describe_business_object": {
@@ -334,7 +345,8 @@
         "required": [
           "business_object"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "describe_business_object_json": {
@@ -354,7 +366,8 @@
         "required": [
           "business_object"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "describe_repository": {
@@ -374,7 +387,8 @@
         "required": [
           "business_object"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "describe_repository_json": {
@@ -394,7 +408,8 @@
         "required": [
           "business_object"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "get_list_of_values": {
@@ -414,7 +429,8 @@
         "required": [
           "lov_types"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "get_query_syntax": {
@@ -438,7 +454,8 @@
             "type": "string"
           }
         },
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "get_record": {
@@ -466,7 +483,8 @@
           "business_object",
           "id"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "get_record_with_children": {
@@ -490,7 +508,8 @@
           "business_object",
           "id"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "list_business_objects": {
@@ -500,7 +519,8 @@
       "source": "business_objects",
       "input_schema": {
         "properties": {},
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "list_business_objects_json": {
@@ -510,7 +530,8 @@
       "source": "business_objects",
       "input_schema": {
         "properties": {},
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "query_child_records": {
@@ -554,7 +575,8 @@
           "parent_id",
           "child_business_component"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "query_child_records_json": {
@@ -598,7 +620,8 @@
           "parent_id",
           "child_business_component"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "query_data": {
@@ -634,7 +657,8 @@
         "required": [
           "business_object"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "query_records_json": {
@@ -677,7 +701,8 @@
         "required": [
           "business_object"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "siebel_usage_guide": {
@@ -700,7 +725,8 @@
       ],
       "input_schema": {
         "properties": {},
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "update_record": {
@@ -730,7 +756,8 @@
           "id",
           "data"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "upload_attachment": {
@@ -778,7 +805,8 @@
           "file_ext",
           "file_content_base64"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     },
     "web_search": {
@@ -800,7 +828,8 @@
         "required": [
           "query"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       }
     }
   }
