@@ -220,6 +220,21 @@ def _deref(node: Any, defs: dict[str, Any], _stack: tuple[str, ...] = ()) -> Any
     share mutable property dicts."""
     if isinstance(node, dict):
         if "$ref" in node:
+            # A $ref with sibling keys is ambiguous (JSON Schema would merge
+            # them; this loader inlines only the referenced definition). Reject
+            # rather than silently drop the siblings. The bundled spec has none.
+            siblings = sorted(k for k in node if k != "$ref")
+            if siblings:
+                raise _SpecError(
+                    f"$ref at {'.'.join(_stack) or '<root>'} carries sibling keys {siblings} "
+                    "— not supported (merge the definition instead)"
+                )
+            # Depth guard: a non-cyclic but very deep $ref chain would hit
+            # Python's recursion limit and escape as RecursionError. Cap at 100
+            # so it surfaces as a clean _SpecError (caught alongside _SpecError by
+            # the reload/load contract).
+            if len(_stack) > 100:
+                raise _SpecError("$ref chain too deep (max 100)")
             ref = node["$ref"]
             prefix = "#/$defs/"
             if not isinstance(ref, str) or not ref.startswith(prefix):
@@ -521,7 +536,7 @@ class ToolRegistry:
                 raise _SpecError(f"unknown kind {kind!r} for {name!r} (known: {sorted(_KINDS)})")
             try:
                 schema = _deref(entry["input_schema"], defs)
-            except _SpecError as exc:
+            except (_SpecError, RecursionError) as exc:
                 raise _SpecError(f"$ref error in {name!r}: {exc}") from exc
             if not _valid_resolved_schema(schema):
                 raise _SpecError(f"invalid resolved schema for {name!r}")
@@ -612,7 +627,7 @@ class ToolRegistry:
             try:
                 built, preferred_fields, session_name = self._load_valid_tools()
                 validators = self._build_validators(built)
-            except _SpecError as exc:
+            except (_SpecError, RecursionError) as exc:
                 # Record this mtime so a broken file isn't re-read on every list
                 # call; it'll be retried when the file changes again.
                 self._spec_mtime = mtime

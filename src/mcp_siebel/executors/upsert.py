@@ -66,8 +66,24 @@ def _validate_bc_upsert(entry: dict[str, Any], name: str, schema: dict[str, Any]
     scope = entry.get("scope")
     if scope not in _SCOPES:
         raise _SpecError(f"bc_upsert entry {name!r} has invalid scope {scope!r} (expected 'root' or 'child')")
+    if operation == "update" and scope == "child":
+        # Child update isn't supported by the executor (the update path ignores
+        # scope and would treat a child row as a root row). Reject at load rather
+        # than silently misbehave; implementing child-update is out of scope.
+        raise _SpecError(
+            f"bc_upsert entry {name!r}: operation 'update' with scope 'child' is not supported"
+        )
     render = entry.get("render")
-    validate_render(kind="bc_upsert", name=name, render=render, accepted_families={"upsert"})
+    # The render must match the operation/scope: root create -> create_*,
+    # child create -> child_create_*, update -> update_*. Splitting the family
+    # stops a create tool from rendering an update (or vice versa).
+    if operation == "update":
+        accepted_render_families = {"update"}
+    elif scope == "child":
+        accepted_render_families = {"child_create"}
+    else:
+        accepted_render_families = {"create"}
+    validate_render(kind="bc_upsert", name=name, render=render, accepted_families=accepted_render_families)
     allowed = entry.get("allowed_fields")
     if allowed is not None and (
         not isinstance(allowed, list) or not all(isinstance(f, str) for f in allowed)

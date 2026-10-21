@@ -153,6 +153,7 @@ def test_upsert_create_child_requires_parent_and_child_bc(tmp_path) -> None:
                 "x": _upsert(
                     operation="create",
                     scope="child",
+                    render="child_create_prose",
                     props={"business_object": {"type": "string"}},
                     required=["business_object"],
                 )
@@ -168,6 +169,7 @@ def test_upsert_update_requires_id(tmp_path) -> None:
                 "x": _upsert(
                     operation="update",
                     scope="root",
+                    render="update_prose",
                     props={"business_object": {"type": "string"}, "data": {"type": "object"}},
                     required=["business_object", "data"],
                 )
@@ -207,6 +209,76 @@ def test_upsert_render_wrong_family_rejected(tmp_path) -> None:
                     bind={"business_object": "Account"},
                     props={"data": {"type": "object"}},
                     required=["data"],
+                )
+            },
+        )
+
+
+def test_upsert_update_child_rejected(tmp_path) -> None:
+    """Finding 9: operation 'update' with scope 'child' is not supported and is
+    rejected at load (the update path ignores scope and would treat a child row
+    as a root row)."""
+    with pytest.raises(_SpecError, match=r"update.*child"):
+        _reg(
+            tmp_path,
+            {
+                "x": _upsert(
+                    operation="update",
+                    scope="child",
+                    render="update_prose",
+                    props={"business_object": {"type": "string"}},
+                    required=["business_object"],
+                )
+            },
+        )
+
+
+def test_upsert_create_with_update_render_rejected(tmp_path) -> None:
+    """Finding 10: a create tool may not use an update render (family split)."""
+    with pytest.raises(_SpecError, match="family 'update'"):
+        _reg(
+            tmp_path,
+            {
+                "x": _upsert(
+                    operation="create",
+                    scope="root",
+                    render="update_prose",
+                    props={"business_object": {"type": "string"}},
+                    required=["business_object"],
+                )
+            },
+        )
+
+
+def test_upsert_update_with_create_render_rejected(tmp_path) -> None:
+    """Finding 10: an update tool may not use a create render."""
+    with pytest.raises(_SpecError, match="family 'create'"):
+        _reg(
+            tmp_path,
+            {
+                "x": _upsert(
+                    operation="update",
+                    scope="root",
+                    render="create_prose",
+                    props={"business_object": {"type": "string"}, "data": {"type": "object"}},
+                    required=["business_object", "data"],
+                )
+            },
+        )
+
+
+def test_upsert_child_create_with_root_render_rejected(tmp_path) -> None:
+    """Finding 10: a child-create tool may not use a root-create render."""
+    with pytest.raises(_SpecError, match="family 'create'"):
+        _reg(
+            tmp_path,
+            {
+                "x": _upsert(
+                    operation="create",
+                    scope="child",
+                    render="create_prose",
+                    props={"business_object": {"type": "string"}},
+                    required=["business_object"],
                 )
             },
         )
@@ -578,7 +650,9 @@ def test_delete_unknown_bind_key_rejected(tmp_path) -> None:
 
 
 def test_delete_render_wrong_family_rejected(tmp_path) -> None:
-    with pytest.raises(_SpecError, match="family 'upsert'"):
+    # create_prose is now family 'create' (the upsert family was split), so it is
+    # still wrong for a bc_delete tool — the message names the create family.
+    with pytest.raises(_SpecError, match="family 'create'"):
         _reg(
             tmp_path,
             {
