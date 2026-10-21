@@ -61,6 +61,7 @@ from . import __version__
 from .config import load_settings
 from .context import CorrelationMiddleware, session_id_var, turn_id_var
 from .notifications import McpSessionBroadcaster, SseSubscribers, make_spec_changed_hook, sse_events_stream
+from .system_prompt import load_instructions
 from .tools import SessionStore, ToolRegistry
 from .watcher import ToolSpecWatcher
 
@@ -169,7 +170,12 @@ async def _call_tool(
     return CallToolResult(content=texts, is_error=bool(result.get("isError")))
 
 
-_mcp = Server("siebel-crm", on_list_tools=_list_tools, on_call_tool=_call_tool)
+# LLM-facing server instructions, delivered to the MCP client in the Initialize
+# handshake — the same guidance stdio delivers, now over SSE/REST too. Loaded
+# once at import (not hot-reloaded — a change needs a restart).
+_INSTRUCTIONS = load_instructions(registry.session_tool_name)
+
+_mcp = Server("siebel-crm", instructions=_INSTRUCTIONS, on_list_tools=_list_tools, on_call_tool=_call_tool)
 
 
 # ---------------------------------------------------------------------------
