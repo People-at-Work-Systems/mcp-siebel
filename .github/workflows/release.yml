@@ -7,9 +7,6 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      id-token: write  # OIDC trusted publishing to PyPI
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -17,7 +14,11 @@ jobs:
           python-version: "3.12"
       - run: pip install build
       - run: python -m build
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # PyPI publishing is intentionally deferred — installs pull from the git
+      # repo for now (see README § Installation). To re-enable PyPI trusted
+      # publishing, restore the job-level `environment: release` +
+      # `permissions: id-token: write` and this step:
+      # - uses: pypa/gh-action-pypi-publish@release/v1
       - name: GitHub Release
         uses: softprops/action-gh-release@v2
         with:
