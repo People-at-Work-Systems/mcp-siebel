@@ -34,7 +34,7 @@ The top-level object has four sections:
 | Section | Required | Purpose |
 |---|---|---|
 | `$schema` | no | Points editors at the JSON Schema. **Ignored by the loader.** |
-| `$defs` | no | Shared parameter definitions. Referenced from `input_schema` with `{"$ref": "#/$defs/<name>"}`. The loader inlines every `$ref` before serving a schema, so clients always receive a fully-resolved `inputSchema`. Only `#/$defs/<name>` refs are supported (no external refs); cycles are rejected. |
+| `$defs` | no | Shared parameter definitions. Referenced from `input_schema` with `{"$ref": "#/$defs/<name>"}`. The loader inlines every `$ref` before serving a schema, so clients always receive a fully-resolved `inputSchema`. Only `#/$defs/<name>` refs are supported (no external refs); cycles are rejected. A `$ref` may not carry sibling keys (rejected — merge the definition instead), and `$ref` chains are capped at depth 100 (a deeper non-cyclic chain is rejected as a load error rather than crashing). |
 | `preferred_fields` | no | Business Component name → ordered list of field names. An ordered *preference list* the `bc_read` curated-query fallback intersects with the fields the BC actually reports. Surfaced to executors via `ToolContext.preferred_fields`; hot-reloaded with the tools. |
 | `tools` | **yes** | The tool map: tool name → entry. Duplicate tool names are rejected. |
 
@@ -45,12 +45,23 @@ options**. The common fields are:
 |---|---|---|---|
 | `description` | yes | string | The tool description shown to the model. |
 | `kind` | yes | string | Selects the executor. One of `python`, `bc_query`, `bc_upsert`, `bc_delete`, `bc_describe`, `bc_read`, `static_text`. |
-| `enabled` | no | bool | The single on/off switch. Defaults to `true`; set `false` to hide the tool from `list_tools` and refuse it at `call`. See [Per-tool enabled flag](#per-tool-enabled-flag). |
+| `enabled` | **yes** | bool | The single on/off switch. **Mandatory** — there is no silent default, so a deployer opts in to each tool explicitly. Set `false` to hide the tool from `list_tools` and refuse it at `call`. See [Per-tool enabled flag](#per-tool-enabled-flag). |
 | `establishes_session` | no | bool | True for the one tool the transports call to create a session. Exactly one entry must set it; it must also be `enabled: true`. |
 | `input_schema` | yes | object | The MCP `inputSchema` (a JSON Schema). Every property must carry a concrete `type` after `$ref` inlining. |
 
 Kind-specific options follow, alphabetically; `input_schema` is conventionally
 last. (The bundled file is normalized to that key order.)
+
+**Allowed/required options are enforced once, centrally.** Each kind registers
+its `allowed_options`/`required_options` (the `_X_ALLOWED_OPTIONS`/
+`_X_REQUIRED_OPTIONS` constants that document each kind's options below) on a
+shared `_KindSpec`; the registry checks them in one place before dispatching to
+the kind's validator, which holds only kind-specific logic (enums, render family,
+bind, bind types). An unknown option or a missing required option on any kind is
+a load error naming the kind and the offending key.
+
+> The kind examples below are illustrative excerpts and omit `enabled` (and some
+> common fields) for brevity; `enabled` is **mandatory** on every real entry.
 
 ## Per-tool enabled flag
 
@@ -58,9 +69,12 @@ last. (The bundled file is normalized to that key order.)
 env var. The registry hides a tool from `list_tools` and refuses it at `call`
 when `enabled: false`.
 
-- **Default `true`** — an entry that omits `enabled` is enabled.
+- **Mandatory (fail-closed)** — every entry must set `enabled` explicitly. There
+  is no silent default, so an entry that omits it is a **load error**, not
+  silently enabled. A deployer opts in to each tool explicitly.
 - **Read-only by default** — the bundled spec sets `enabled: false` on its 7
-  write/delete/external tools so the server is read-only out of the box:
+  write/delete/external tools and `enabled: true` on the other 19, so the server
+  is read-only out of the box:
 
   | Tool | Kind | Why gated |
   |---|---|---|
@@ -72,7 +86,9 @@ when `enabled: false`.
   pointed at by `SIEBEL_TOOLS_SPEC_PATH`. There is no env-var gate; the spec is
   the only switch.
 - **Hot-reloaded** — flipping `enabled` on a live server reaches connected
-  clients on the next `tools/list` (see [Hot-reload](#hot-reload)).
+  clients on the next `tools/list`, and `call()` hot-reloads before dispatch
+  too, so a tool flipped to `enabled: false` is refused even when the caller
+  never re-listed (see [Hot-reload](#hot-reload)).
 
 ### `establishes_session`
 
@@ -80,6 +96,31 @@ Exactly one entry must mark `establishes_session: true`. It must also be
 `enabled: true` (disabling the session tool would brick the server — there would
 be no way to establish a session). The transports read its name from the registry
 (`session_tool_name`) so they need not hard-code a tool name.
+
+## Argument validation (call time)
+
+The registry validates every tool call's `arguments` against the tool's resolved
+`input_schema` **before dispatch**, using a `jsonschema` `Draft202012Validator`
+built per tool at load time and cached on the snapshot. A failure returns a
+specific `param: expected …; received …` error (one line per error) as an
+`isError` result — not the internal error mask, and the executor is never
+reached with bad args.
+
+Authoring consequences for `input_schema`:
+
+- **`additionalProperties: false`** is set on every bundled tool's top-level
+  `input_schema`, so a caller-supplied property the schema doesn't declare is
+  rejected. This also closes the undeclared-bound-key path of [bind](#bind)
+  (a bound key is removed from `properties`, so supplying it is an unknown
+  property).
+- **Bounds** are declared on the shared `page_size` `$def`
+  (`minimum: 1`, `maximum: 100`) and `offset` `$def` (`minimum: 0`); the
+  `$defs` are inlined by `_deref`, so the bounds reach every referencing tool.
+- **`fields`** accepts either an array or a comma-separated string
+  (`type: ["array", "string"]`), matching the tool's documented contract; the
+  executor's placeholder guard still runs on both forms. Numeric `page_size`/
+  `offset` are typed `integer` (so a string value is rejected with a clean
+  validation error, not coerced).
 
 ## Kinds
 
@@ -161,17 +202,20 @@ Example (`query_data`):
 | Option | Required | Type | Notes |
 |---|---|---|---|
 | `operation` | yes | `create` \| `update` | |
-| `scope` | yes | `root` \| `child` | Create under the BC (`root`) or under a parent record (`child`). |
-| `render` | yes | string | An `upsert`-family renderer. |
+| `scope` | yes | `root` \| `child` | Create under the BC (`root`) or under a parent record (`child`). **`operation: "update"` with `scope: "child"` is rejected at load** (child-update is not supported; the update path ignores scope). |
+| `render` | yes | string | A renderer whose family matches the operation/scope (see below). |
 | `bind` | no | object | See [bind](#bind). |
 | `allowed_fields` | no | array of strings | See [allowed_fields](#allowed_fields). **Required (non-empty) when `business_component` is bound.** |
 
-Renderer family: `upsert` (`create_prose`,
-`create_json`, `update_prose`, `child_create_prose`). Required params:
-`business_object` (always); `id` for `operation: "update"`; `parent_id` +
-`child_business_component` for `scope: "child"`. The bundled `bc_upsert` tools
-(`create_record`, `create_record_json`, `create_child_record`, `update_record`)
-are `enabled: false` (read-only by default).
+Renderer families are split by operation/scope, so a create tool can't render an
+update (or vice versa): `create` (`create_prose`, `create_json`) for
+`operation: "create"`, `scope: "root"`; `child_create` (`child_create_prose`)
+for `operation: "create"`, `scope: "child"`; `update` (`update_prose`) for
+`operation: "update"`. Required params: `business_object` (always); `id` for
+`operation: "update"`; `parent_id` + `child_business_component` for
+`scope: "child"`. The bundled `bc_upsert` tools (`create_record`,
+`create_record_json`, `create_child_record`, `update_record`) are
+`enabled: false` (read-only by default).
 
 Example (`create_record`):
 
@@ -329,6 +373,13 @@ the effective arguments. It pins a tool to a fixed Business Object / Component,
 a fixed field list, a fixed search spec — so a customer-specific tool can expose
 one shaped query without letting the model name the BC or the fields.
 
+The merge is `{**args, **bind}` — **the spec bind wins over a caller-supplied
+value**, so a pinned key cannot be overridden. Combined with the disjoint rule
+below (a bound key is removed from `input_schema.properties`) and
+`additionalProperties: false` (see [Argument validation](#argument-validation-call-time)),
+a caller supplying a bound key is rejected as an unknown property; the pinned
+value is the only one that can reach the executor.
+
 Rules (enforced at load time):
 
 - **Disjoint from `input_schema.properties`** — a bound key may not also be a
@@ -400,9 +451,10 @@ If one of the generic kinds fits, adding a tool is a spec edit only — no code,
 no restart of the registry's import graph (the spec is hot-reloaded):
 
 1. Add an entry under `tools` with the right `kind`, the kind's required
-   options, and an `input_schema`. Set `"enabled": false` if the tool should be
-   hidden (defaults to `true`); the bundled spec disables its 7
-   write/delete/external tools this way.
+   options, and an `input_schema`. **Set `enabled` explicitly on every entry**
+   — it is mandatory (no default): `true` to expose the tool, `false` to hide
+   it; the bundled spec disables its 7 write/delete/external tools with
+   `enabled: false` and sets `enabled: true` on the rest.
 2. Save the file. The next `tools/list` serves the new tool (see
    [Hot-reload](#hot-reload)).
 
