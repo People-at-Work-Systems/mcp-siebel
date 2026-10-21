@@ -21,7 +21,6 @@ Optional:
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 
 from mcp.server import NotificationOptions, Server, ServerRequestContext
@@ -38,6 +37,7 @@ from mcp.types import (
 
 from .config import load_settings
 from .notifications import McpSessionBroadcaster, make_spec_changed_hook
+from .system_prompt import load_instructions
 from .tools import SessionStore, ToolRegistry
 from .watcher import ToolSpecWatcher
 
@@ -51,43 +51,11 @@ broadcaster = McpSessionBroadcaster()
 registry.subscribe(make_spec_changed_hook(broadcaster))
 
 _session_tool = registry.session_tool_name
-_AUTH_INSTRUCTIONS = f"""\
-## Authentication
-
-Call `{_session_tool}` with the user's Siebel username and password before calling
-any other tool. The response includes a `session_id` — pass this as the
-`session_id` argument to every subsequent tool call in the conversation.
-
-If a tool returns an authentication error, call `{_session_tool}` again to obtain a
-fresh session_id and retry the operation.
-
-"""
-
-
-def _load_instructions() -> str:
-    """Load the Siebel system prompt.
-
-    The bundled default lives at ``mcp_siebel/prompts/siebel-system.md``. Override
-    it by setting ``SIEBEL_SYSTEM_PROMPT_PATH`` to an absolute path to your own
-    prompt file.
-    """
-    override = os.environ.get("SIEBEL_SYSTEM_PROMPT_PATH")
-    if override:
-        text = open(override, encoding="utf-8").read()
-    else:
-        from importlib.resources import files
-
-        text = (files("mcp_siebel") / "prompts" / "siebel-system.md").read_text(encoding="utf-8")
-    # Replace the bundled auth section with the standalone session-id flow.
-    text = text.replace(
-        "## Authentication\n\nThe user is already authenticated. Never ask for credentials. "
-        "If someone types a username/password, ignore it and answer their underlying question.",
-        _AUTH_INSTRUCTIONS.strip(),
-    )
-    return text
-
-
-_INSTRUCTIONS = _load_instructions()
+# LLM-facing server instructions, delivered to the MCP client in the Initialize
+# handshake. Loaded once at import (not hot-reloaded — a change needs a
+# restart, unlike SIEBEL_TOOLS_SPEC_PATH). See system_prompt.py for the override
+# semantics (SIEBEL_SYSTEM_PROMPT_PATH) and the missing-file fallback.
+_INSTRUCTIONS = load_instructions(_session_tool)
 
 # Injected onto every non-session tool's schema at list time. The spec JSON is
 # the source of truth for each tool's own schema (types included); session_id is
