@@ -67,6 +67,8 @@ class SiebelClient:
         page_size: int = 20,
         request_timeout_ms: int = 30_000,
         max_concurrent_requests: int = 5,
+        verify_tls: bool = True,
+        ca_bundle: str = "",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.auth_mode = auth_mode
@@ -79,6 +81,10 @@ class SiebelClient:
         self._semaphore = asyncio.Semaphore(max_concurrent_requests)
         # Populated by login() for auth_mode == "token"
         self._session_token: str | None = None
+        # httpx `verify`: a path string -> use that CA bundle; True -> default OS
+        # verification; False -> disabled. A CA bundle overrides verify_tls so a
+        # self-signed cert can be trusted with verification still on.
+        self._verify: str | bool = ca_bundle or verify_tls
 
     async def login(self) -> None:
         """Exchange username+password for a Siebel session token (auth_mode='token').
@@ -90,7 +96,7 @@ class SiebelClient:
         basic = base64.b64encode(
             f"{self.username or ''}:{self.password or ''}".encode()
         ).decode()
-        async with httpx.AsyncClient(verify=False, timeout=self.timeout) as client:
+        async with httpx.AsyncClient(verify=self._verify, timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.base_url}/auth",
                 headers={"Authorization": f"Basic {basic}", "Accept": "application/json"},
@@ -169,7 +175,7 @@ class SiebelClient:
                  for k, v in headers.items()},
             )
 
-            async with httpx.AsyncClient(verify=False, timeout=self.timeout) as client:
+            async with httpx.AsyncClient(verify=self._verify, timeout=self.timeout) as client:
                 response = await client.request(
                     method,
                     f"{self.base_url}{path}",

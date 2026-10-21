@@ -28,6 +28,12 @@ class AppSettings(BaseSettings):
     scheme: str = "http"
     sso_header: str = "SBL_USER"
     language_code: str = "ENU"
+    # TLS verification for outbound calls to Siebel. Default true (verify the
+    # server certificate). Against a self-signed dev Siebel, set SIEBEL_CA_BUNDLE
+    # to the CA bundle path (verification stays on, or SIEBEL_VERIFY_TLS=false to
+    # disable verification (dev only).
+    verify_tls: bool = True
+    ca_bundle: str = ""
 
     # -- Auth probe (standalone) ---------------------------------------------
     # In standalone mode _authenticate probes the SSO identity with a real data

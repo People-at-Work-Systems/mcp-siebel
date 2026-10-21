@@ -19,6 +19,7 @@ import pytest
 
 from mcp_siebel.config import AppSettings
 from mcp_siebel.tools import SessionContext, ToolRegistry, _SpecError
+from tests.test_tool_specs import _bump_mtime
 
 # The 7 tools the bundled spec disables (read-only by default). ``external``
 # covers tools that send free text to an outside service (web_search) — gated
@@ -149,6 +150,29 @@ async def test_call_runs_tool_once_enabled(tmp_path) -> None:
     assert result.get("isError")
     text = " ".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
     assert "disabled" not in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_call_reloads_disabled_tool_without_prior_list(tmp_path) -> None:
+    """Finding 5: call() hot-reloads before dispatch, so a tool flipped to
+    disabled in the spec file is refused at call() even when the caller never
+    invoked list_tools() after the flip (previously call() read a stale snapshot
+    and reached the executor)."""
+    # Start with web_search enabled.
+    reg = _override_one(tmp_path, "web_search", enabled=True)
+    spec_path = tmp_path / "spec.json"
+    # Flip web_search back to disabled in the SAME spec file and bump mtime.
+    tools = deepcopy(_bundled_tools())
+    tools["web_search"] = {**tools["web_search"], "enabled": False}  # type: ignore[index]
+    spec = deepcopy(_bundled_spec())
+    spec["tools"] = tools  # type: ignore[assignment]
+    spec_path.write_text(json.dumps(spec, indent=2), encoding="utf-8")
+    _bump_mtime(spec_path)
+    # Call with NO intervening list_tools() — call() must reload and refuse.
+    result = await reg.call("web_search", {"query": "x"}, None)
+    assert result.get("isError")
+    text = " ".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
+    assert "disabled" in text.lower()
 
 
 # --- a new tool added via JSON is gated by its enabled flag ------------------

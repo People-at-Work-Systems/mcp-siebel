@@ -709,9 +709,14 @@ class ToolRegistry:
         return list(snap.exposed_tools)
 
     async def call(self, name: str, arguments: dict[str, Any], session: SessionContext | None) -> dict[str, Any]:
-        # Read the snapshot reference exactly once: the tool lookup and the
-        # preferred_fields / session_tool_name used below all come from the same
-        # version, so a concurrent reload can never split them.
+        # Hot-reload before dispatch: a disabled tool flipped in an override spec
+        # must be refused here even when the caller never invoked list_tools()
+        # first (the lazy reload in list_tools/snapshot is the other entry point).
+        # Re-read the snapshot reference exactly once after the reload so the
+        # tool lookup, validators and preferred_fields / session_tool_name used
+        # below all come from the same version — a concurrent reload can never
+        # split them.
+        self._reload_if_changed()
         snap = self._snapshot
         assert snap is not None, "no tool spec loaded"
         tool = snap.tools.get(name)

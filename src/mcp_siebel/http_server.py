@@ -159,7 +159,7 @@ async def _call_tool(
     args = dict(params.arguments or {})
     session_id = args.pop("session_id", None)
     session = sessions.get(session_id)
-    if name == registry.session_tool_name and session is None:
+    if name == registry.session_tool_name:
         session = sessions.create()
     result = await registry.call(name, args, session)
     if name == registry.session_tool_name and session is not None:
@@ -311,7 +311,7 @@ async def create_session(request: SessionCreateRequest) -> SessionCreateResponse
 @app.post("/tools/{tool_name}", dependencies=[Depends(require_api_token)])
 async def call_tool(tool_name: str, request: ToolCallRequest) -> dict[str, Any]:
     session = sessions.get(request.session_id)
-    if tool_name == registry.session_tool_name and session is None:
+    if tool_name == registry.session_tool_name:
         session = sessions.create()
     result = await registry.call(tool_name, request.arguments, session)
     if tool_name == registry.session_tool_name and session is not None:

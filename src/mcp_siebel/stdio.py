@@ -130,7 +130,7 @@ async def _call_tool(
     args = dict(params.arguments or {})
     session_id = args.pop("session_id", None)
     session = sessions.get(session_id)
-    if name == registry.session_tool_name and session is None:
+    if name == registry.session_tool_name:
         session = sessions.create()
     result = await registry.call(name, args, session)
     content = result.get("content") or [{"type": "text", "text": str(result)}]

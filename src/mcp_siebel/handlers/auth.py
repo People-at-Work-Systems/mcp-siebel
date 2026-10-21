@@ -20,6 +20,13 @@ async def _authenticate(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any
     session = ctx.session
     if session is None:
         return _error("No session was provided.")
+    # Belt-and-braces against session hijack via rebind: the transports always
+    # create a fresh session for the session tool, so this session should be
+    # brand-new (no client yet). If an already-authenticated session reaches
+    # here, refuse to rebind it to a different identity — the caller must start
+    # a new session instead.
+    if session.client is not None:
+        return _error("Session is already authenticated; start a new session instead.")
     username = str(args.get("username") or "")
     password = args.get("password")
     if not username:
@@ -79,4 +86,6 @@ def _sso_client(settings: AppSettings, username: str) -> SiebelClient:
         page_size=settings.default_page_size,
         request_timeout_ms=settings.request_timeout_ms,
         max_concurrent_requests=settings.max_concurrent_requests,
+        verify_tls=settings.verify_tls,
+        ca_bundle=settings.ca_bundle,
     )
