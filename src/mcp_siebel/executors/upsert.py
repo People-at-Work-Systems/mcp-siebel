@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..common import _error, _require_auth, _resolve_bo_bc, _text
-from ..kinds import _COMMON_FIELDS, _KindSpec, _SpecError
+from ..kinds import _KindSpec, _SpecError
 from ..renderers import RENDERERS, validate_render
 from ._validation import validate_bind_and_required
 
@@ -51,13 +51,8 @@ _UPSERT_BIND_TYPES: dict[str, str] = {
 
 
 def _validate_bc_upsert(entry: dict[str, Any], name: str, schema: dict[str, Any]) -> None:
-    options = set(entry.keys()) - _COMMON_FIELDS
-    extra = options - _UPSERT_ALLOWED_OPTIONS
-    if extra:
-        raise _SpecError(f"unknown option(s) {sorted(extra)} for bc_upsert entry {name!r}")
-    missing = _UPSERT_REQUIRED_OPTIONS - entry.keys()
-    if missing:
-        raise _SpecError(f"bc_upsert entry {name!r} missing required option(s) {sorted(missing)}")
+    # Allowed/required options are enforced centrally in ToolRegistry._load_valid_tools
+    # from this kind's _KindSpec; this callback holds only bc_upsert-specific logic.
     operation = entry.get("operation")
     if operation not in _OPERATIONS:
         raise _SpecError(

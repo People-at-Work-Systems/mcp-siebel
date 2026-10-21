@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..common import _text
-from ..kinds import _COMMON_FIELDS, _KindSpec, _SpecError
+from ..kinds import _KindSpec, _SpecError
 
 if TYPE_CHECKING:
     from ..tools import ToolContext
@@ -27,13 +27,8 @@ _STATIC_TEXT_REQUIRED_OPTIONS = frozenset({"text"})
 
 
 def _validate_static_text(entry: dict[str, Any], name: str, schema: dict[str, Any]) -> None:
-    options = set(entry.keys()) - _COMMON_FIELDS
-    extra = options - _STATIC_TEXT_ALLOWED_OPTIONS
-    if extra:
-        raise _SpecError(f"unknown option(s) {sorted(extra)} for static_text entry {name!r}")
-    missing = _STATIC_TEXT_REQUIRED_OPTIONS - entry.keys()
-    if missing:
-        raise _SpecError(f"static_text entry {name!r} missing required option(s) {sorted(missing)}")
+    # Allowed/required options are enforced centrally in ToolRegistry._load_valid_tools
+    # from this kind's _KindSpec; this callback holds only static_text-specific logic.
     text = entry.get("text")
     if isinstance(text, list):
         if not all(isinstance(line, str) for line in text):

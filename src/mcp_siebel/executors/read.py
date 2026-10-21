@@ -27,7 +27,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from ..common import _error, _require_auth, _resolve_bo_bc, _text, _validate_fields_arg
-from ..kinds import _COMMON_FIELDS, _KindSpec, _SpecError
+from ..kinds import _KindSpec, _SpecError
 from ..renderers import RENDERERS, validate_render
 from ..siebel_client import SiebelError
 from ._fallback import _record_via_query
@@ -64,13 +64,8 @@ _BC_READ_BIND_TYPES: dict[str, str] = {
 
 
 def _validate_bc_read(entry: dict[str, Any], name: str, schema: dict[str, Any]) -> None:
-    options = set(entry.keys()) - _COMMON_FIELDS
-    extra = options - _BC_READ_ALLOWED_OPTIONS
-    if extra:
-        raise _SpecError(f"unknown option(s) {sorted(extra)} for bc_read entry {name!r}")
-    missing = _BC_READ_REQUIRED_OPTIONS - entry.keys()
-    if missing:
-        raise _SpecError(f"bc_read entry {name!r} missing required option(s) {sorted(missing)}")
+    # Allowed/required options are enforced centrally in ToolRegistry._load_valid_tools
+    # from this kind's _KindSpec; this callback holds only bc_read-specific logic.
     mode = entry.get("mode")
     if mode not in _MODES:
         raise _SpecError(

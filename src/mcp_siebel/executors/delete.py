@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..common import _require_auth, _resolve_bo_bc, _text
-from ..kinds import _COMMON_FIELDS, _KindSpec, _SpecError
+from ..kinds import _KindSpec
 from ..renderers import RENDERERS, validate_render
 from ._validation import validate_bind_and_required
 
@@ -36,13 +36,8 @@ _DELETE_BIND_TYPES: dict[str, str] = {"business_object": "str", "business_compon
 
 
 def _validate_bc_delete(entry: dict[str, Any], name: str, schema: dict[str, Any]) -> None:
-    options = set(entry.keys()) - _COMMON_FIELDS
-    extra = options - _DELETE_ALLOWED_OPTIONS
-    if extra:
-        raise _SpecError(f"unknown option(s) {sorted(extra)} for bc_delete entry {name!r}")
-    missing = _DELETE_REQUIRED_OPTIONS - entry.keys()
-    if missing:
-        raise _SpecError(f"bc_delete entry {name!r} missing required option(s) {sorted(missing)}")
+    # Allowed/required options are enforced centrally in ToolRegistry._load_valid_tools
+    # from this kind's _KindSpec; this callback holds only bc_delete-specific logic.
     render = entry.get("render")
     validate_render(kind="bc_delete", name=name, render=render, accepted_families={"delete"})
     validate_bind_and_required(

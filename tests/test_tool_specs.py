@@ -90,6 +90,23 @@ def _full_valid_spec() -> dict[str, dict[str, object]]:
 # ---------------------------------------------------------------------------
 
 
+def test_registry_enforces_kind_options(tmp_path) -> None:
+    """Finding 13: the registry centrally rejects an unknown option on every kind
+    (the per-kind _KindSpec.allowed_options is the single source of truth, read
+    once in _load_valid_tools instead of duplicated in each executor)."""
+    tools = _bundled_tools()
+    by_kind: dict[str, str] = {}
+    for name, entry in tools.items():
+        by_kind.setdefault(entry["kind"], name)  # type: ignore[union-attr]
+    # sanity: the bundled spec exercises every registered kind
+    assert set(by_kind) == set(_KINDS), f"kinds missing from bundled spec: {set(_KINDS) - set(by_kind)}"
+    for kind, name in by_kind.items():
+        bad = deepcopy(tools)
+        bad[name] = {**bad[name], "bogus_option": "x"}  # type: ignore[index]
+        with pytest.raises(_SpecError, match="unknown option"):
+            _registry_with_spec(tmp_path, bad)
+
+
 def test_spec_entries_have_known_kind_and_valid_options() -> None:
     """Every bundled entry declares a known kind whose allowed options accept
     it, and the registry loads them all. The 7 write/delete/external tools are
@@ -308,7 +325,9 @@ def test_spec_missing_kind_rejected(tmp_path) -> None:
 def test_spec_missing_handler_rejected(tmp_path) -> None:
     spec = _full_valid_spec()
     spec["aggregate_data"] = {k: v for k, v in spec["aggregate_data"].items() if k != "handler"}
-    with pytest.raises(_SpecError, match="requires a 'handler'"):
+    # 'handler' is a required option for the python kind; the centralized
+    # required-option check rejects the entry naming 'handler'.
+    with pytest.raises(_SpecError, match="handler"):
         _registry_with_spec(tmp_path, spec)
 
 

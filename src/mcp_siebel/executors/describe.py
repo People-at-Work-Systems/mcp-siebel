@@ -28,7 +28,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..common import _error, _error_result, _require_auth, _text
-from ..kinds import _COMMON_FIELDS, _KindSpec, _SpecError
+from ..kinds import _KindSpec, _SpecError
 from ..renderers import RENDERERS, validate_render
 from ..siebel_client import SiebelError
 from ._validation import validate_bind_and_required
@@ -56,13 +56,8 @@ _BO_NOT_FOUND = 'Business Object "{bo}" not found. Use list_business_objects to 
 
 
 def _validate_bc_describe(entry: dict[str, Any], name: str, schema: dict[str, Any]) -> None:
-    options = set(entry.keys()) - _COMMON_FIELDS
-    extra = options - _DESCRIBE_ALLOWED_OPTIONS
-    if extra:
-        raise _SpecError(f"unknown option(s) {sorted(extra)} for bc_describe entry {name!r}")
-    missing = _DESCRIBE_REQUIRED_OPTIONS - entry.keys()
-    if missing:
-        raise _SpecError(f"bc_describe entry {name!r} missing required option(s) {sorted(missing)}")
+    # Allowed/required options are enforced centrally in ToolRegistry._load_valid_tools
+    # from this kind's _KindSpec; this callback holds only bc_describe-specific logic.
     source = entry.get("source")
     if source not in _SOURCES:
         raise _SpecError(

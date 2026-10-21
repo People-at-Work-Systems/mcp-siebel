@@ -29,7 +29,7 @@ from ..common import (
     _text,
     _validate_fields_arg,
 )
-from ..kinds import _COMMON_FIELDS, _KindSpec, _SpecError
+from ..kinds import _KindSpec, _SpecError
 from ..renderers import RENDERERS, validate_render
 from ..siebel_client import SiebelError
 from ._validation import validate_bind_and_required
@@ -129,13 +129,8 @@ def _placeholders_outside_quotes(template: str) -> list[str]:
 
 
 def _validate_bc_query(entry: dict[str, Any], name: str, schema: dict[str, Any]) -> None:
-    options = set(entry.keys()) - _COMMON_FIELDS
-    extra = options - _BC_QUERY_ALLOWED_OPTIONS
-    if extra:
-        raise _SpecError(f"unknown option(s) {sorted(extra)} for bc_query entry {name!r}")
-    missing = _BC_QUERY_REQUIRED_OPTIONS - entry.keys()
-    if missing:
-        raise _SpecError(f"bc_query entry {name!r} missing required option(s) {sorted(missing)}")
+    # Allowed/required options are enforced centrally in ToolRegistry._load_valid_tools
+    # from this kind's _KindSpec; this callback holds only bc_query-specific logic.
     scope = entry.get("scope")
     if scope not in _SCOPES:
         raise _SpecError(f"bc_query entry {name!r} has invalid scope {scope!r} (expected 'root' or 'child')")

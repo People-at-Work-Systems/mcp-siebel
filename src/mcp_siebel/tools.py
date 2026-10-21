@@ -334,11 +334,11 @@ _ALLOWED_HANDLER_PKG = "mcp_siebel.handlers"
 
 
 def _validate_python(entry: dict[str, Any], name: str, schema: dict[str, Any]) -> None:
-    options = set(entry.keys()) - _COMMON_FIELDS
-    extra = options - {"handler"}
-    if extra:
-        raise _SpecError(f"unknown option(s) {sorted(extra)} for python entry {name!r}")
-    if not isinstance(entry.get("handler"), str) or not entry["handler"]:
+    # Allowed/required options (handler) are enforced centrally in
+    # _load_valid_tools from _KindSpec; here only the kind-specific handler
+    # value check remains — it must be a non-empty string (the central presence
+    # check guarantees the key exists by this point).
+    if not isinstance(entry["handler"], str) or not entry["handler"]:
         raise _SpecError(f"kind 'python' requires a 'handler' string for {name!r}")
 
 
@@ -540,6 +540,19 @@ class ToolRegistry:
                 raise _SpecError(f"$ref error in {name!r}: {exc}") from exc
             if not _valid_resolved_schema(schema):
                 raise _SpecError(f"invalid resolved schema for {name!r}")
+            # Central allowed/required-option enforcement (finding 13): each
+            # _KindSpec carries the allowed/required option sets populated by its
+            # executor; check them once here so the per-kind validate callbacks
+            # hold only kind-specific logic (enums, render, bind, bind types) and
+            # the _X_ALLOWED_OPTIONS/_X_REQUIRED_OPTIONS constants stay the single
+            # source that populates _KindSpec.
+            options = set(entry) - _COMMON_FIELDS
+            extra = options - kind_spec.allowed_options
+            if extra:
+                raise _SpecError(f"unknown option(s) {sorted(extra)} for {kind} entry {name!r}")
+            missing = kind_spec.required_options - entry.keys()
+            if missing:
+                raise _SpecError(f"{kind} entry {name!r} missing required option(s) {sorted(missing)}")
             # Kind-specific option validation (raises _SpecError naming the rule).
             kind_spec.validate(entry, name, schema)
             # Bind the executor once; the returned callable is the single handler
