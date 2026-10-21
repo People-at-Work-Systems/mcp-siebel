@@ -5,17 +5,6 @@ from __future__ import annotations
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Tools gated behind SIEBEL_ALLOW_WRITE / SIEBEL_ALLOW_DELETE (both default off,
-# so the server is read-only by default). See AppSettings.disabled_tools.
-WRITE_TOOLS: tuple[str, ...] = (
-    "create_record",
-    "create_record_json",
-    "update_record",
-    "create_child_record",
-    "upload_attachment",
-)
-DELETE_TOOLS: tuple[str, ...] = ("delete_record",)
-
 
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -46,7 +35,7 @@ class AppSettings(BaseSettings):
     # The probe BO/BC must be (a) REST-enabled and (b) NOT accessible to an
     # unauthenticated/guest identity — a bogus SSO header must yield an error
     # (>=400), not a 200. If it returns 200 for guest (e.g. Account on instances
-    # that grant guest read access), authenticate can't detect an invalid header
+    # that grant guest read access), the probe can't detect an invalid header
     # and will report success. Override per instance; Account/Account is a
     # reasonable default for standard Siebel sample DBs.
     probe_business_object: str = "Account"
@@ -63,12 +52,6 @@ class AppSettings(BaseSettings):
     # -- Demo mode ------------------------------------------------------------
     demo_enabled: bool = False
 
-    # -- Access gates (default off = read-only) -------------------------------
-    # When False, the corresponding tools are auto-added to disabled_tools and
-    # therefore unlisted by ToolRegistry.list_tools() and refused by call().
-    allow_write: bool = False
-    allow_delete: bool = False
-
     # -- Session lifetime -----------------------------------------------------
     # Absolute per-session TTL in ms. A session expires this long after its
     # creation (mirrors the fixed Siebel REST session lifetime). Must stay
@@ -77,25 +60,21 @@ class AppSettings(BaseSettings):
     session_timeout_ms: int = Field(default=30 * 60 * 1000, ge=60_000)
 
     # -- Tools ----------------------------------------------------------------
-    # Kept as str so pydantic-settings never attempts JSON-decoding.
-    # Use the disabled_tools property to get the parsed list.
-    disabled_tools_raw: str = Field(default="", alias="SIEBEL_DISABLED_TOOLS")
+    # Path to an external tool-spec JSON file (name/description/inputSchema per
+    # tool). Empty = use the bundled mcp_siebel/specs/tool_specs.json. The
+    # registry hot-reloads this file by mtime, so edits take effect on the next
+    # tools/list with no restart. Mirrors SIEBEL_SYSTEM_PROMPT_PATH.
+    tools_spec_path: str = Field(default="", alias="SIEBEL_TOOLS_SPEC_PATH")
 
-    @property
-    def disabled_tools(self) -> list[str]:
-        """Explicit SIEBEL_DISABLED_TOOLS list plus the access-gate defaults.
-
-        When allow_write / allow_delete are False (the default, read-only mode),
-        the write tools and delete_record are appended here so the existing
-        ToolRegistry filter (which reads this property) hides and refuses them.
-        """
-        explicit = [t.strip() for t in self.disabled_tools_raw.split(",") if t.strip()]
-        gated: list[str] = []
-        if not self.allow_write:
-            gated.extend(WRITE_TOOLS)
-        if not self.allow_delete:
-            gated.extend(DELETE_TOOLS)
-        return explicit + gated
+    # Whether to start a watchfiles file watcher that pushes spec changes to the
+    # registry as they happen (instead of waiting for the next tools/list). The
+    # watcher watches the spec file's directory and filters to the spec path, so
+    # an editor's atomic temp-file + rename replace is detected; bursts are
+    # debounced (~300 ms). Default true; set false to disable. The lazy mtime
+    # check in list_tools() stays as a fallback either way. Python handler
+    # modules are NOT watched — a code change still needs a restart; only the
+    # JSON spec is hot-reloaded.
+    tools_spec_watch: bool = Field(default=True, alias="SIEBEL_TOOLS_SPEC_WATCH")
 
     # -- OAuth ----------------------------------------------------------------
     oauth_client_id: str = ""

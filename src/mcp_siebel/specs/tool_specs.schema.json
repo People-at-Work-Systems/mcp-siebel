@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcp-siebel.dev/schemas/tool_specs.schema.json",
+  "title": "mcp-siebel tool spec",
+  "description": "JSON Schema for src/mcp_siebel/specs/tool_specs.json. Describes the top-level sections ($defs, preferred_fields, tools), the fields common to every entry (description, kind, enabled, establishes_session, input_schema), and the per-kind options validated with if/then on 'kind'. This is an authoring aid for editors (autocomplete + validation); the loader's runtime validation remains the source of truth — a spec that passes this schema may still be rejected by the loader (e.g. a render from the wrong family for a kind's mode/source/result, a handler that does not resolve, or a cross-field rule this schema does not express).",
+  "type": "object",
+  "required": ["tools"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "The JSON Schema this spec conforms to (ignored by the loader)."
+    },
+    "$defs": {
+      "type": "object",
+      "description": "Shared parameter definitions referenced from input_schema via '#/$defs/<name>'. Inlined (dereffed) by the loader before schemas are served.",
+      "additionalProperties": true
+    },
+    "preferred_fields": {
+      "type": "object",
+      "description": "Optional. Business Component name -> ordered list of preferred field names. Treated as an ordered preference list, intersected with the fields the BC actually reports. Surfaced to executors via ToolContext.preferred_fields; hot-reloaded with the tools.",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" },
+        "minItems": 1,
+        "uniqueItems": true
+      }
+    },
+    "tools": {
+      "type": "object",
+      "description": "The tool map: tool name -> spec entry. Tool names must be unique (the loader rejects duplicate keys).",
+      "additionalProperties": { "$ref": "#/$defs/toolEntry" }
+    }
+  },
+  "$defs": {
+    "kindEnum": {
+      "type": "string",
+      "enum": ["python", "bc_query", "bc_upsert", "bc_delete", "bc_describe", "bc_read", "static_text"]
+    },
+    "bindObject": {
+      "type": "object",
+      "description": "Fixed values from the spec merged with the caller's input. Bind keys must be disjoint from input_schema properties and must name a parameter the executor reads (validated at load time). Value types are checked per-kind at load time.",
+      "additionalProperties": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "description": "The MCP inputSchema for the tool. The loader inlines $defs/$ref before serving, then requires every property to carry a concrete JSON Schema 'type'.",
+      "required": ["type", "properties"],
+      "additionalProperties": true,
+      "properties": {
+        "type": { "type": "string" },
+        "properties": { "type": "object" },
+        "required": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "renderNames": {
+      "type": "string",
+      "enum": [
+        "query_prose",
+        "child_query_prose",
+        "query_json",
+        "count_prose",
+        "count_json",
+        "create_prose",
+        "create_json",
+        "update_prose",
+        "child_create_prose",
+        "delete_prose",
+        "record_prose",
+        "record_hierarchical_prose",
+        "list_prose",
+        "list_json",
+        "describe_bc_prose",
+        "describe_bc_json",
+        "repository_prose",
+        "repository_json"
+      ]
+    },
+    "toolEntry": {
+      "type": "object",
+      "required": ["description", "kind", "input_schema"],
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string" },
+        "kind": { "$ref": "#/$defs/kindEnum" },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "The single on/off switch for a tool. false hides it from list_tools() and refuses it in call(). Defaults to true; the bundled spec sets enabled: false on its 7 write/delete/external tools (read-only by default). Flip enabled: true in an override spec to turn a tool on — no env var."
+        },
+        "establishes_session": {
+          "type": "boolean",
+          "description": "True for the single tool the transports call to create a session. Exactly one entry must set this; it must also be enabled (checked by the loader)."
+        },
+        "input_schema": { "$ref": "#/$defs/inputSchema" },
+        "handler": { "type": "string", "description": "python only: 'mcp_siebel.handlers.<module>:<func>'. The resolver permits only modules under mcp_siebel.handlers." },
+        "scope": { "type": "string", "enum": ["root", "child"] },
+        "result": { "type": "string", "enum": ["records", "count"] },
+        "operation": { "type": "string", "enum": ["create", "update"] },
+        "mode": { "type": "string", "enum": ["single", "with_children"] },
+        "source": { "type": "string", "enum": ["business_objects", "bc_descriptor", "repository"] },
+        "fallback": { "type": "string", "enum": ["curated_query"] },
+        "render": { "$ref": "#/$defs/renderNames" },
+        "text": {
+          "description": "static_text only: the text the tool returns verbatim. A string, or a list of strings joined with '\\n'.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" } }
+          ]
+        },
+        "bind": { "$ref": "#/$defs/bindObject" },
+        "searchspec_template": { "type": "string", "description": "bc_query only: a Siebel searchspec template with {placeholder} tokens filled from the caller's matching input_schema properties. Mutually exclusive with a 'searchspec' argument or bound 'searchspec' (checked by the loader)." },
+        "allowed_fields": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "bc_upsert only: the only field names a caller may write. Required (non-empty) when business_component is bound (checked by the loader)."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["kind"], "properties": { "kind": { "const": "python" } } },
+          "then": {
+            "required": ["handler"],
+            "properties": {
+              "handler": { "type": "string" },
+              "render": false,
+              "scope": false,
+              "result": false,
+              "operation": false,
+              "mode": false,
+              "source": false,
+              "fallback": false,
+              "text": false,
+              "bind": false,
+              "searchspec_template": false,
+              "allowed_fields": false
+            }
+          }
+        },
+        {
+          "if": { "required": ["kind"], "properties": { "kind": { "const": "bc_query" } } },
+          "then": {
+            "required": ["scope", "result", "render"],
+            "properties": {
+              "scope": { "enum": ["root", "child"] },
+              "result": { "enum": ["records", "count"] },
+              "render": { "enum": ["query_prose", "child_query_prose", "query_json", "count_prose", "count_json"] },
+              "bind": { "$ref": "#/$defs/bindObject" },
+              "searchspec_template": { "type": "string" },
+              "handler": false,
+              "operation": false,
+              "mode": false,
+              "source": false,
+              "fallback": false,
+              "text": false,
+              "allowed_fields": false
+            }
+          }
+        },
+        {
+          "if": { "required": ["kind"], "properties": { "kind": { "const": "bc_upsert" } } },
+          "then": {
+            "required": ["operation", "scope", "render"],
+            "properties": {
+              "operation": { "enum": ["create", "update"] },
+              "scope": { "enum": ["root", "child"] },
+              "render": { "enum": ["create_prose", "create_json", "update_prose", "child_create_prose"] },
+              "bind": { "$ref": "#/$defs/bindObject" },
+              "allowed_fields": { "type": "array", "items": { "type": "string" } },
+              "handler": false,
+              "result": false,
+              "mode": false,
+              "source": false,
+              "fallback": false,
+              "text": false,
+              "searchspec_template": false
+            }
+          }
+        },
+        {
+          "if": { "required": ["kind"], "properties": { "kind": { "const": "bc_delete" } } },
+          "then": {
+            "required": ["render"],
+            "properties": {
+              "render": { "enum": ["delete_prose"] },
+              "bind": { "$ref": "#/$defs/bindObject" },
+              "handler": false,
+              "scope": false,
+              "result": false,
+              "operation": false,
+              "mode": false,
+              "source": false,
+              "fallback": false,
+              "text": false,
+              "searchspec_template": false,
+              "allowed_fields": false
+            }
+          }
+        },
+        {
+          "if": { "required": ["kind"], "properties": { "kind": { "const": "bc_describe" } } },
+          "then": {
+            "required": ["source", "render"],
+            "properties": {
+              "source": { "enum": ["business_objects", "bc_descriptor", "repository"] },
+              "render": { "enum": ["list_prose", "list_json", "describe_bc_prose", "describe_bc_json", "repository_prose", "repository_json"] },
+              "bind": { "$ref": "#/$defs/bindObject" },
+              "handler": false,
+              "scope": false,
+              "result": false,
+              "operation": false,
+              "mode": false,
+              "fallback": false,
+              "text": false,
+              "searchspec_template": false,
+              "allowed_fields": false
+            }
+          }
+        },
+        {
+          "if": { "required": ["kind"], "properties": { "kind": { "const": "bc_read" } } },
+          "then": {
+            "required": ["mode", "render"],
+            "properties": {
+              "mode": { "enum": ["single", "with_children"] },
+              "render": { "enum": ["record_prose", "record_hierarchical_prose"] },
+              "fallback": { "enum": ["curated_query"] },
+              "bind": { "$ref": "#/$defs/bindObject" },
+              "handler": false,
+              "scope": false,
+              "result": false,
+              "operation": false,
+              "source": false,
+              "text": false,
+              "searchspec_template": false,
+              "allowed_fields": false
+            },
+            "allOf": [
+              {
+                "description": "fallback curated_query is only valid with mode 'single' (the with-children path fetches child records, not a field list).",
+                "if": { "required": ["fallback"], "properties": { "fallback": { "enum": ["curated_query"] } } },
+                "then": { "properties": { "mode": { "const": "single" } } }
+              }
+            ]
+          }
+        },
+        {
+          "if": { "required": ["kind"], "properties": { "kind": { "const": "static_text" } } },
+          "then": {
+            "required": ["text"],
+            "properties": {
+              "text": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] },
+              "handler": false,
+              "scope": false,
+              "result": false,
+              "operation": false,
+              "mode": false,
+              "source": false,
+              "fallback": false,
+              "render": false,
+              "bind": false,
+              "searchspec_template": false,
+              "allowed_fields": false
+            }
+          }
+        }
+      ]
+    }
+  }
+}

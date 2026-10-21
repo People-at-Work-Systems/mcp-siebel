@@ -13,9 +13,10 @@ emitted placeholder tokens like '<?>'. That produced:
     from describe_business_object(Account, Contact) — Contact lives in its own
     BO, not Account's.
 
-These tests pin the three fixes: rich schemas (descriptions + `required`),
-placeholder-field rejection before any Siebel call, the safe ['Id'] retry, and
-the describe_business_object BO fallback.
+These tests pin the fixes: rich schemas (descriptions + `required`, now authored
+in ``tool_specs.json`` and served via the registry), placeholder-field rejection
+before any Siebel call, the safe ['Id'] retry, and the describe_business_object
+BO fallback.
 """
 
 from __future__ import annotations
@@ -24,50 +25,19 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from mcp_siebel.common import _validate_fields_arg
 from mcp_siebel.config import AppSettings
-from mcp_siebel.schema_cache import SchemaCache
 from mcp_siebel.siebel_client import (
     SiebelBCDescriptor,
     SiebelError,
     SiebelFieldDescriptor,
     SiebelQueryResult,
 )
-from mcp_siebel.tools import (
-    SessionContext,
-    ToolContext,
-    _describe_business_object,
-    _query_data,
-    _schema,
-    _validate_fields_arg,
-)
+from mcp_siebel.tools import SessionContext, ToolRegistry
 
 # ---------------------------------------------------------------------------
-# _schema
+# Registry-served schema (authored in tool_specs.json, $ref-resolved by the loader)
 # ---------------------------------------------------------------------------
-
-
-def test_schema_adds_description_for_known_fields():
-    schema = _schema("business_object", "fields")
-    assert schema["type"] == "object"
-    assert schema["properties"]["business_object"] == {
-        "type": "string",
-        "description": schema["properties"]["business_object"]["description"],
-    }
-    assert "NEVER pass placeholder" in schema["properties"]["fields"]["description"]
-
-
-def test_schema_keeps_concrete_type_for_every_property():
-    # Claude Desktop rejects properties without a concrete JSON Schema type —
-    # the descriptions/required must not displace the "type" key.
-    schema = _schema("business_object", "fields", "searchspec")
-    for prop in schema["properties"].values():
-        assert prop["type"] == "string"
-
-
-def test_schema_emits_required_only_when_given():
-    assert "required" not in _schema("business_object", "business_component")
-    schema = _schema("business_object", "id", required=("business_object", "id"))
-    assert schema["required"] == ["business_object", "id"]
 
 
 def test_query_data_schema_marks_business_object_required():
@@ -107,21 +77,21 @@ def test_validate_fields_rejects_placeholders(raw):
 # ---------------------------------------------------------------------------
 
 
-def _query_ctx() -> tuple[ToolContext, AsyncMock]:
+def _query_reg_and_session() -> tuple[ToolRegistry, SessionContext, AsyncMock]:
     query_mock = AsyncMock()
     client = AsyncMock()
     client.query = query_mock
     cache = AsyncMock()
     cache.resolve_business_object = AsyncMock(return_value="Account")
     session = SessionContext(session_id="s1", username="t", client=client, cache=cache)
-    return ToolContext(settings=AppSettings(), session=session), query_mock
+    return ToolRegistry(AppSettings()), session, query_mock
 
 
 @pytest.mark.asyncio
 async def test_query_data_rejects_placeholder_fields_without_calling_siebel():
-    ctx, query_mock = _query_ctx()
-    response = await _query_data(
-        {"business_object": "Account", "business_component": "Account", "fields": "<?>"}, ctx
+    reg, session, query_mock = _query_reg_and_session()
+    response = await reg.call(
+        "query_data", {"business_object": "Account", "business_component": "Account", "fields": "<?>"}, session
     )
     assert response.get("isError") is True
     assert "placeholder" in response["content"][0]["text"].lower()
@@ -139,12 +109,14 @@ async def test_query_data_field_error_retries_with_id_not_none():
     validation) must trigger the 50258 retry with fields=['Id'], never with
     None, so Siebel's broken default Contact field set is never used."""
     result = SiebelQueryResult(items=[{"Id": "1-5GZE"}], total_count=1, has_more=False, offset=0, page_size=20)
-    ctx, query_mock = _query_ctx()
+    reg, session, query_mock = _query_reg_and_session()
     field_error = SiebelError("bad field", 500, '{"ERROR":"...SBL-EAI-50258..."}')
     query_mock.side_effect = [field_error, result]
 
-    response = await _query_data(
-        {"business_object": "Account", "business_component": "Account", "fields": "NonExistentField"}, ctx
+    response = await reg.call(
+        "query_data",
+        {"business_object": "Account", "business_component": "Account", "fields": "NonExistentField"},
+        session,
     )
     assert response.get("isError") is not True  # retry succeeded
     # Second (retry) call must pass fields=["Id"], not None.
@@ -153,11 +125,14 @@ async def test_query_data_field_error_retries_with_id_not_none():
 
 
 # ---------------------------------------------------------------------------
-# _describe_business_object — BO fallback on SBL-EAI-50257
+# describe_business_object — BO fallback on SBL-EAI-50257 (driven via the
+# registry, so it stays valid now that the tool uses the bc_describe executor)
 # ---------------------------------------------------------------------------
 
 
-def _describe_ctx(get_descriptor_side_effect, resolve_map: dict[str, str]) -> ToolContext:
+def _describe_reg_and_session(
+    get_descriptor_side_effect, resolve_map: dict[str, str]
+) -> tuple[ToolRegistry, SessionContext]:
     cache = AsyncMock()
 
     async def resolve(name: str) -> str | None:
@@ -165,13 +140,9 @@ def _describe_ctx(get_descriptor_side_effect, resolve_map: dict[str, str]) -> To
 
     cache.resolve_business_object = AsyncMock(side_effect=resolve)
     cache.get_descriptor = AsyncMock(side_effect=get_descriptor_side_effect)
-    # field_summary is a sync @staticmethod on the real SchemaCache; the
-    # AsyncMock would otherwise return a coroutine, so bind the real one.
-    cache.field_summary = SchemaCache.field_summary
-
     client = AsyncMock()
     session = SessionContext(session_id="s1", username="t", client=client, cache=cache)
-    return ToolContext(settings=AppSettings(), session=session)
+    return ToolRegistry(AppSettings()), session
 
 
 @pytest.mark.asyncio
@@ -189,9 +160,9 @@ async def test_describe_falls_back_to_child_own_bo_on_50257():
             )
         raise AssertionError(f"unexpected describe call: {bo}/{bc}")
 
-    ctx = _describe_ctx(get_descriptor, {"account": "Account", "contact": "Contact"})
-    response = await _describe_business_object(
-        {"business_object": "Account", "business_component": "Contact"}, ctx
+    reg, session = _describe_reg_and_session(get_descriptor, {"account": "Account", "contact": "Contact"})
+    response = await reg.call(
+        "describe_business_object", {"business_object": "Account", "business_component": "Contact"}, session
     )
     text = response["content"][0]["text"]
     assert "Contact / Contact" in text  # described under Contact's own BO, not Account
@@ -206,6 +177,6 @@ async def test_describe_returns_error_when_bc_is_the_bo_itself():
     async def get_descriptor(bo: str, bc: str) -> SiebelBCDescriptor:
         raise SiebelError("not mapped", 500, '{"ERROR":"...SBL-EAI-50257..."}')
 
-    ctx = _describe_ctx(get_descriptor, {"account": "Account"})
-    response = await _describe_business_object({"business_object": "Account"}, ctx)
+    reg, session = _describe_reg_and_session(get_descriptor, {"account": "Account"})
+    response = await reg.call("describe_business_object", {"business_object": "Account"}, session)
     assert response.get("isError") is True

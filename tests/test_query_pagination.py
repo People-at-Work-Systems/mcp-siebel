@@ -1,15 +1,16 @@
 """Regression tests for the query_data/query_child_records pagination bug.
 
-MCP tool schemas type every argument as JSON string (see `_schema()` in
-tools.py — required for Claude Desktop compatibility), so the LLM always
-sends `offset`/`page_size` as strings, e.g. {"offset": "100"}. `page_size`
-was correctly cast with int(...), but `offset` was passed straight through
-to SiebelClient.query()/query_child_records() uncast. That string offset
-flowed into the result dict and blew up with
-`TypeError: can only concatenate str (not "int") to str` when tools.py
-computed `result['offset'] + idx + 1` to number the returned records —
-crashing every paginated query_data/query_child_records call with a
-non-default offset.
+MCP tool schemas type every argument as JSON string, so the LLM always sends
+`offset`/`page_size` as strings, e.g. {"offset": "100"}. `page_size` was
+correctly cast with int(...), but `offset` was passed straight through to
+SiebelClient.query()/query_child_records() uncast. That string offset flowed
+into the result dict and blew up with
+`TypeError: can only concatenate str (not "int") to str` when numbering the
+returned records — crashing every paginated query_data/query_child_records call
+with a non-default offset.
+
+These now drive the tools through ``ToolRegistry.call`` (the tools are kind
+``bc_query``), so they cover the executor path too.
 """
 
 from __future__ import annotations
@@ -20,10 +21,10 @@ import pytest
 
 from mcp_siebel.config import AppSettings
 from mcp_siebel.siebel_client import SiebelQueryResult
-from mcp_siebel.tools import SessionContext, ToolContext, _query_child_records, _query_data
+from mcp_siebel.tools import SessionContext, ToolRegistry
 
 
-def _make_ctx(query_result: SiebelQueryResult) -> tuple[ToolContext, AsyncMock]:
+def _make_registry_and_session(query_result: SiebelQueryResult) -> tuple[ToolRegistry, SessionContext, AsyncMock]:
     query_mock = AsyncMock(return_value=query_result)
     client = AsyncMock()
     client.query = query_mock
@@ -33,8 +34,8 @@ def _make_ctx(query_result: SiebelQueryResult) -> tuple[ToolContext, AsyncMock]:
     cache.resolve_business_object = AsyncMock(return_value="Account")
 
     session = SessionContext(session_id="s1", username="tester", client=client, cache=cache)
-    ctx = ToolContext(settings=AppSettings(), session=session)
-    return ctx, query_mock
+    ctx = ToolRegistry(AppSettings())
+    return ctx, session, query_mock
 
 
 @pytest.mark.asyncio
@@ -47,7 +48,7 @@ async def test_query_data_with_string_offset_does_not_crash():
         page_size=2,
         next_start_row=102,
     )
-    ctx, query_mock = _make_ctx(result)
+    reg, session, query_mock = _make_registry_and_session(result)
 
     # This is exactly the shape the LLM sends — every field is a JSON string,
     # including offset/page_size, per the tool's declared input_schema.
@@ -58,7 +59,7 @@ async def test_query_data_with_string_offset_does_not_crash():
         "offset": "100",
     }
 
-    response = await _query_data(args, ctx)
+    response = await reg.call("query_data", args, session)
 
     assert response.get("isError") is not True
     text = response["content"][0]["text"]
@@ -82,10 +83,10 @@ async def test_query_data_with_missing_offset_defaults_to_zero():
         offset=0,
         page_size=20,
     )
-    ctx, query_mock = _make_ctx(result)
+    reg, session, query_mock = _make_registry_and_session(result)
 
     args = {"business_object": "Account", "business_component": "Account"}
-    response = await _query_data(args, ctx)
+    response = await reg.call("query_data", args, session)
 
     assert "Record 1:" in response["content"][0]["text"]
     _, kwargs = query_mock.call_args
@@ -102,7 +103,7 @@ async def test_query_child_records_with_string_offset_does_not_crash():
         page_size=1,
         next_start_row=51,
     )
-    ctx, query_mock = _make_ctx(result)
+    reg, session, query_mock = _make_registry_and_session(result)
 
     args = {
         "business_object": "Account",
@@ -113,7 +114,7 @@ async def test_query_child_records_with_string_offset_does_not_crash():
         "offset": "50",
     }
 
-    response = await _query_child_records(args, ctx)
+    response = await reg.call("query_child_records", args, session)
 
     text = response["content"][0]["text"]
     assert "Record 51:" in text
