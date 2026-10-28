@@ -18,6 +18,7 @@ partial work lands there · **–** not planned · blank = not yet slotted.
 | Per-key scopes / rate limits / audit | ○ | ● | | |
 | Per-tenant Siebel connection + pool | ● | | | |
 | Per-tenant session store (namespaced) | ● | | | |
+| `SessionStore` externalization (Redis/shared backend) | ○ | ● | | |
 | Per-tenant `schema_cache` | ● | | | |
 | Per-tenant tool-spec `enabled` overrides | | | ● | |
 | Per-tenant system prompt | | | ● | |
@@ -78,7 +79,38 @@ get an isolated session.
   **namespaced by tenant** (`(tenant_id, session_id)`). Cross-tenant
   session_id replay must fail. `authenticate` resolves the tenant from context
   and opens the Siebel session against that tenant's client.
-- **`schema_cache`** — BC descriptors differ per Siebel; must be per-tenant.
+- **`SessionStore` is in-memory** (`tools.py:146` — `self._sessions` is a plain
+  dict), so it is the one piece of truly global state that blocks horizontal
+  scaling: a restart drops every session, and two replicas behind a load
+  balancer are not interchangeable (a `session_id` may hit the replica that
+  doesn't hold it → forced re-auth). Make it a **pluggable interface with an
+  in-memory default and a Redis/shared backend** — design the interface in
+  0.2.2 (while building per-tenant sessions), ship the Redis backend in 0.3.0
+  with the container image and `gateway` mode. Cheap specifically in SSO mode:
+  the per-user state is just `session_id → username` (the `SiebelClient`
+  re-sends the SSO header every call; no live Siebel session token to keep
+  warm), so the store is a small mapping, not a warm session pool. Because that
+  mapping is a capability — whoever controls it controls which Siebel identity
+  the server asserts via the SSO header — the externalized store has hard
+  requirements: **high-entropy unguessable `session_id`s**; **TLS to the store**;
+  **store-side ACL + encryption at rest**; **network isolation** (the store is
+  not reachable outside mcp-net/private); **tenant-scoped lookups** (validate
+  `tenant_id` on read, not just write — a tenant A `session_id` must never
+  resolve in tenant B's namespace); and **no Siebel credentials or SSO secrets
+  in the store** (SSO mode holds none; the store keeps only
+  `session_id → (tenant_id, username)`). Evicting a `session_id` in the store
+  *is* the revocation mechanism.
+- **`schema_cache`** — BC descriptors differ per Siebel, so the cache must be
+  **at least per-tenant**. But the cache is **per-session (per-user) today**
+  (`auth.py:76`), populated from Siebel *as that user*, and that per-user grain
+  must be preserved unless sharing is proven safe. Sharing one cache across
+  users *within* a tenant is an optimization that is only safe if
+  `/data/{bo}/{bc}/describe` returns an identical field set across all
+  responsibilities and field-level-visibility profiles in that tenant. For
+  banking/government deployments the **default is per-user (per-session)
+  caching**; per-tenant sharing is an explicit, per-tenant opt-in that requires
+  evidence the describe response is responsibility-invariant. The cache must
+  never be shared across tenants.
 - **`ToolRegistry` / spec** — one global tool set today. 0.2.2 ships a **shared
   spec** across tenants (scoped enforcement is per-key, not per-tenant-spec yet);
   per-tenant `enabled` overrides follow in 0.4.0.
@@ -135,6 +167,36 @@ quotas/metrics/lifecycle story move to **0.4.0** (Phase 2/3 below).
 - **Add a "no cross-tenant access" test** alongside the existing session-hijack
   and framework-isolation tests.
 
+### Security posture (banking/government bar)
+
+The multi-tenancy and session-externalization work **adds routing and isolation;
+it must not re-implement or broaden authorization.** Per-user data visibility —
+objects, fields, rows — stays enforced by **Siebel on every call**, via the
+per-user SSO header, exactly as today. The server never decides what a user may
+see; it only decides *which tenant's Siebel* and *which user's header* to send,
+and both are pinned to the caller.
+
+- **Enforcement boundary unchanged.** Each tool call still sends the caller's
+  SSO header to that tenant's Siebel; Siebel applies responsibilities,
+  field-level security, and sharing rules. No authz logic moves into the MCP
+  server, and no path widens what a user can reach.
+- **No cross-tenant or cross-user leakage.** Tenant is resolved from the API key
+  and pinned at the SSE handshake; sessions are namespaced by tenant and
+  validated on every call; a tenant A request can never resolve to tenant B's
+  client or to another user's header. Within a tenant, each user still
+  `authenticate`s as themselves and gets their own `SiebelClient` + `SchemaCache`.
+- **Metadata is treated as potentially sensitive.** `schema_cache` defaults to
+  per-user (see above); per-tenant sharing is opt-in only with evidence that
+  `describe` is responsibility-invariant. Field *names/types/existence* can be
+  protected data in regulated deployments.
+- **The externalized session store is a capability store** (see the Session store
+  bullet): TLS, ACL, encryption at rest, network isolation, tenant-scoped reads,
+  no Siebel secrets, eviction = revocation.
+- **Audit trail.** Every call is attributable to `(tenant_id, username,
+  session_id)` via the existing correlation middleware; for regulated
+  deployments this is the audit record, so tenant + user must appear on every
+  log line/span and every tool-invocation trace.
+
 ### Composes with later releases
 
 - **`gateway` mode (0.3.0)** is orthogonal: gateway decides *how* you
@@ -144,3 +206,7 @@ quotas/metrics/lifecycle story move to **0.4.0** (Phase 2/3 below).
 - **OAuth/Keycloak (0.3.0)** sits alongside API keys: OAuth for human SSO per
   tenant, API keys for machine clients per tenant, both resolving to the same
   `(tenant_id, caller)` context.
+- **`SessionStore` externalization (0.3.0)** is what makes the 0.3.0 cloud
+  deployment real: the container image + `gateway` mode only deliver HA and
+  rolling deploys once replicas share sessions. The interface is designed in
+  0.2.2 so the 0.3.0 backend is a drop-in.
