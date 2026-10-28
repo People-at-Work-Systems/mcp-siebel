@@ -19,6 +19,7 @@ partial work lands there · **–** not planned · blank = not yet slotted.
 | Per-tenant Siebel connection + pool | ● | | | |
 | Per-tenant session store (namespaced) | ● | | | |
 | `SessionStore` externalization (Redis/shared backend) | ○ | ● | | |
+| Cross-replica `tools_changed` fan-out (Redis pub/sub) | | ● | | |
 | Per-tenant `schema_cache` | ● | | | |
 | Per-tenant tool-spec `enabled` overrides | | | ● | |
 | Per-tenant system prompt | | | ● | |
@@ -210,3 +211,85 @@ and both are pinned to the caller.
   deployment real: the container image + `gateway` mode only deliver HA and
   rolling deploys once replicas share sessions. The interface is designed in
   0.2.2 so the 0.3.0 backend is a drop-in.
+
+## 0.3.0 — Publishing, cloud deployment & gateway auth
+
+**Theme:** ship the first installable release and make it runnable as a
+cloud-hosted, multi-replica, HA service with real enterprise auth. **Redis
+becomes the shared-state backbone** that makes horizontal scaling real — the
+0.2.2 `SessionStore` interface gets its Redis backend here, plus the
+cross-replica fan-out and shared rate-limit counters that multi-replica
+correctness requires. It builds on the 0.2.2 multi-tenancy spine and carries
+the banking/government security posture forward unchanged.
+
+### Redis as the shared-state backbone
+
+The 0.2.2 `SessionStore` interface ships an in-memory default; 0.3.0 adds the
+**Redis backend** and two more Redis-backed shared-state uses that HA needs:
+
+- **Sessions** — `session_id → (tenant_id, username)`. The capability store
+  from the 0.2.2 security posture: high-entropy ids, TLS, ACL + encryption at
+  rest, network isolation, tenant-scoped keys (`t:{tenant_id}:sess:{session_id}`),
+  tenant validated on read, no Siebel/SSO secrets held, TTL + explicit delete =
+  revocation.
+- **Cross-replica `tools_changed` fan-out (pub/sub)** — today the hot-reload
+  watcher notifies only clients connected to *this* process (MCP
+  `notifications/tools/list_changed`, REST ETag/SSE). With N replicas, a spec
+  edit on one replica leaves clients on the others uninformed — an HA
+  correctness gap. Redis pub/sub fans the reload event (+ `content_hash`) to
+  every replica so all connected clients get the notification. The channel
+  carries no secrets.
+- **Per-tenant rate-limit counters** — the 0.2.2 per-key/per-tenant rate limits
+  need *shared* counters to be effective across replicas; a per-process counter
+  is gameable by request rotation. Redis integer counters keyed by
+  `(tenant_id, key_id)` with TTL windows.
+
+An **optional shared `schema_cache` backend** is also Redis-backed, but only for
+tenants where `/data/{bo}/{bc}/describe` is proven responsibility/FLS-invariant
+(the 0.2.2 opt-in). It collapses redundant describe calls across users and
+replicas to one per tenant. **Default off** — per-user (per-session) caching
+remains the safe default for regulated deployments.
+
+### Packaging
+
+- **PyPI publish** — first `v*` tag fires the release workflow; `pip install
+  mcp-siebel[http]` replaces the git-install instructions.
+- **Published container image** — versioned OCI image for the HTTP/SSE
+  transport.
+- **Redis client is a new extra** (e.g. `[redis]` or `[ha]`), gated like
+  `[http]` — the base stdio install must not pull it. The packaging invariant
+  (`test_packaging.py`: base import pulls no gated deps) extends to the Redis
+  client; the stdio path imports it lazily, same as the `[http]` deps.
+
+### Auth modes
+
+- **`gateway` SSO-proxy mode** — finish the mode so the server accepts a
+  gateway-resolved identity (SSO header / JWT-mapped username) instead of
+  username+password `authenticate`. The connector stays IdP-agnostic; OAuth/JWKS
+  lives upstream in the gateway. This is the seam the 0.2.2 multi-tenancy rides.
+- **OAuth 2.0 / Keycloak token exchange** — re-introduce what the 0.2.1 cleanup
+  removed (the dead stub), this time real: OAuth for human SSO per tenant, API
+  keys (from 0.2.2) for machine clients per tenant, both resolving to the same
+  `(tenant_id, caller)` context the Redis session store indexes.
+
+### Operability
+
+- **`/ready` vs `/health` split** — `/health` = process up; `/ready` = Siebel
+  reachable (lightweight probe-BO/BC query) **and** Redis reachable when the
+  Redis backend is active, for load balancers.
+- **CLI introspection** — `mcp-siebel --list-tools` / `--check-config` to dump
+  the resolved tool set and validate env/spec/tenant config without starting a
+  server.
+
+### HA & security notes (carry the 0.2.2 posture forward)
+
+- Redis is on a private network (mcp-net/data-net), not exposed; TLS + ACL +
+  encryption at rest; least-privilege Redis user per backend use.
+- Replicas are interchangeable only because shared state is in Redis — no
+  in-process session/cache state that a request depends on. The in-memory
+  `SessionStore`/`SchemaCache` remain as the single-replica/stdio fallback.
+- Rolling deploys no longer drop sessions (the Redis store survives); a replica
+  restart rehydrates from Redis.
+- Audit: `(tenant_id, username, session_id)` on every log line/span and
+  tool-invocation trace, unchanged from 0.2.2; Redis holds the mapping the audit
+  trail refers to.
