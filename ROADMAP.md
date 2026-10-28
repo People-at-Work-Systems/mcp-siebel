@@ -231,18 +231,34 @@ The 0.2.2 `SessionStore` interface ships an in-memory default; 0.3.0 adds the
   from the 0.2.2 security posture: high-entropy ids, TLS, ACL + encryption at
   rest, network isolation, tenant-scoped keys (`t:{tenant_id}:sess:{session_id}`),
   tenant validated on read, no Siebel/SSO secrets held, TTL + explicit delete =
-  revocation.
+  revocation. **Per-tenant envelope encryption**: the session payload (the
+  `username` — it must be recoverable, since it is sent as the SSO header, so it
+  cannot be hashed) is encrypted under a per-tenant data-encryption key wrapped
+  by a master key, so a single Redis compromise or a misconfigured operator ACL
+  exposes only encrypted ciphertext, not every tenant's SSO identities. The
+  per-tenant DEK lives in the secret store, not Redis.
 - **Cross-replica `tools_changed` fan-out (pub/sub)** — today the hot-reload
   watcher notifies only clients connected to *this* process (MCP
   `notifications/tools/list_changed`, REST ETag/SSE). With N replicas, a spec
   edit on one replica leaves clients on the others uninformed — an HA
-  correctness gap. Redis pub/sub fans the reload event (+ `content_hash`) to
-  every replica so all connected clients get the notification. The channel
-  carries no secrets.
+  correctness gap. Redis pub/sub fans the reload event (+ global `content_hash`)
+  to every replica so all connected clients get the notification. **The payload
+  is global-only**: it carries only the global spec reload signal and the
+  global `content_hash` — never any tenant-specific or key-scoped tool
+  information (a client re-lists and receives its own scoped view). **Forward
+  lock for 0.4.0**: when per-tenant spec overrides arrive, the fan-out must
+  become **tenant-scoped** (a per-tenant channel), otherwise one tenant learns
+  that another tenant's tool set changed and the hash of its exposed tools — a
+  cross-tenant metadata leak. Design the channel namespace now so 0.4.0 is a
+  routing change, not a redesign.
 - **Per-tenant rate-limit counters** — the 0.2.2 per-key/per-tenant rate limits
   need *shared* counters to be effective across replicas; a per-process counter
   is gameable by request rotation. Redis integer counters keyed by
-  `(tenant_id, key_id)` with TTL windows.
+  `(tenant_id, key_id)` with TTL windows. **Tenant-scoped access only**: every
+  read/write is issued under the caller's pinned tenant namespace, and no API or
+  code path reads, aggregates, or enumerates another tenant's counters — another
+  tenant's request rate / traffic volume is a metadata leak (traffic analysis),
+  not just an integer.
 
 An **optional shared `schema_cache` backend** is also Redis-backed, but only for
 tenants where `/data/{bo}/{bc}/describe` is proven responsibility/FLS-invariant
@@ -285,9 +301,24 @@ remains the safe default for regulated deployments.
 
 - Redis is on a private network (mcp-net/data-net), not exposed; TLS + ACL +
   encryption at rest; least-privilege Redis user per backend use.
-- Replicas are interchangeable only because shared state is in Redis — no
-  in-process session/cache state that a request depends on. The in-memory
-  `SessionStore`/`SchemaCache` remain as the single-replica/stdio fallback.
+- **Redis-unreachable failure mode is fail-closed.** In HA mode a request
+  depends on Redis for session lookup; if Redis is unreachable, calls requiring
+  a session are **rejected** (not served, not degraded) and `/ready` goes
+  unhealthy so the load balancer pulls the replica. There is **no silent
+  fallback to in-memory sessions** in a multi-replica deployment — such a
+  fallback would stop revocation from propagating and let sessions live
+  per-replica, a security regression. The in-memory `SessionStore`/`SchemaCache`
+  exist only as the **single-replica/stdio** backend, not as an HA fallback.
+- **Isolation is logical, not physical.** A shared Redis with key namespacing +
+  ACL + per-tenant envelope encryption is the standard multi-tenant SaaS bar and
+  acceptable for banking/government deployments **whose threat model treats the
+  Redis/operator boundary as trusted-but-hardened** (TLS, ACL, encryption at
+  rest, per-tenant DEKs). It is a single shared trust domain. If the requirement
+  instead mandates **per-tenant physical or cryptographic isolation of the
+  session store**, shared Redis does not meet it — the deployment must use
+  per-tenant Redis instances (physical) or rely on the per-tenant envelope
+  encryption above as the cryptographic equivalent. State this assumption per
+  deployment; do not leave it implicit.
 - Rolling deploys no longer drop sessions (the Redis store survives); a replica
   restart rehydrates from Redis.
 - Audit: `(tenant_id, username, session_id)` on every log line/span and
