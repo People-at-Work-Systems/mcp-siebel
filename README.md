@@ -25,6 +25,8 @@ deployment** will likely require adaptation work on **both** sides:
 
 Do not expect it to work unmodified against a production-customized Siebel.
 
+Planned direction (not a commitment): [ROADMAP.md](ROADMAP.md).
+
 ## Siebel prerequisites
 
 - Oracle Siebel **26.2+** with the **REST API** enabled (SWSE / Siebel REST
