@@ -4,6 +4,40 @@ All notable changes to mcp-siebel are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-11-05
+
+Tool-set gaps: three new tools (two enabled by default, one fail-closed), each
+behind new `SIEBEL_` settings. No framework, kind, or renderer changes — all
+three are `python`-kind handlers, so `tool_specs.schema.json` is unchanged.
+Tool count rises from 26 to 29 (21 enabled / 8 disabled).
+
+### Added
+- `download_attachment` (enabled: false, fail-closed like `upload_attachment`):
+  downloads one attachment and returns the file contents base64-encoded when
+  the decoded size is under `SIEBEL_ATTACHMENT_MAX_BYTES` (default 2 MiB, hard
+  ceiling 25 MiB); over the cap it returns metadata only (name, extension,
+  size, attachment id) with a notice. Counterpart to `upload_attachment`.
+- `query_all_records` (enabled: true): the "scroll all" helper — pages through
+  every record matching a searchspec in one call, up to a per-call row ceiling
+  clamped by `SIEBEL_QUERY_MAX_RECORDS` (default 10 000, hard ceiling 50 000).
+  Results are a Markdown table; the result is marked truncated when the ceiling
+  stops the loop before the end. A caller-supplied `max_records` can ask for
+  fewer rows but never more than the setting.
+- `list_rest_enabled_components` (enabled: true): discovers the Business
+  Components actually exposed through the REST data API. With a
+  `business_object`, lists BCs under that one BO; without it, enumerates BOs
+  (capped by `SIEBEL_DISCOVERY_MAX_BUSINESS_OBJECTS`, default 100, hard ceiling
+  500) and lists BCs per BO. Builds on `list_business_objects` and
+  `describe_repository`; a BO whose describe fails shows `(none)` rather than
+  aborting the sweep.
+
+### Notes
+- The `download_attachment` GET endpoint (`/data/{bo}/{bc}/{parent_id}/{attachment_bc}/{attachment_id}`)
+  and the per-BO `list_business_components` endpoint (`/data/{bo}/describe`) are
+  not exercised elsewhere in this codebase and were implemented against the
+  documented Siebel REST surface. Both parse defensively; validate the response
+  shape on first live-Siebel run and patch if needed.
+
 ## [0.2.1] - 2026-10-21
 
 Remediation of the external design/security review of the 0.2.0 refactor, plus a
@@ -123,5 +157,6 @@ Initial release. MCP server for Oracle Siebel CRM 26.2+.
 - Prometheus `/metrics`, `/health`.
 - Demo mode (`SIEBEL_DEMO_ENABLED`) serving sample data without Siebel I/O.
 
+[0.2.1...v0.2.2]: https://github.com/People-at-Work-Systems/mcp-siebel/compare/v0.2.1...v0.2.2
 [0.2.0...v0.2.1]: https://github.com/People-at-Work-Systems/mcp-siebel/compare/v0.2.0...v0.2.1
 [0.1.0...v0.2.0]: https://github.com/People-at-Work-Systems/mcp-siebel/compare/v0.1.0...v0.2.0

@@ -72,13 +72,14 @@ when `enabled: false`.
 - **Mandatory (fail-closed)** — every entry must set `enabled` explicitly. There
   is no silent default, so an entry that omits it is a **load error**, not
   silently enabled. A deployer opts in to each tool explicitly.
-- **Read-only by default** — the bundled spec sets `enabled: false` on its 7
-  write/delete/external tools and `enabled: true` on the other 19, so the server
+- **Read-only by default** — the bundled spec sets `enabled: false` on its 8
+  write/delete/external tools and `enabled: true` on the other 21, so the server
   is read-only out of the box:
 
   | Tool | Kind | Why gated |
   |---|---|---|
   | `create_record`, `create_record_json`, `create_child_record`, `update_record`, `upload_attachment` | `bc_upsert` / `python` | Mutates Siebel data. |
+  | `download_attachment` | `python` | Returns file contents (data egress); fail-closed counterpart to `upload_attachment`. |
   | `delete_record` | `bc_delete` | Removes Siebel data. |
   | `web_search` | `python` | Sends free text to an outside service (Brave) — off so customer data can't leak into a search query without an explicit opt-in. |
 
@@ -138,7 +139,7 @@ service call, a paginated aggregation loop, an external HTTP call).
 |---|---|---|---|
 | `handler` | yes | string | `mcp_siebel.handlers.<module>:<func>`. The resolver permits **only** modules under `mcp_siebel.handlers`; anything outside is rejected. |
 
-No `render`. The bundled `python` tools are `enabled: false` where they mutate data or call an outside service (`upload_attachment`, `web_search`).
+No `render`. The bundled `python` tools are `enabled: false` where they mutate data, egress file contents, or call an outside service (`upload_attachment`, `download_attachment`, `web_search`).
 
 Example (the bundled `aggregate_data`):
 
@@ -453,7 +454,7 @@ no restart of the registry's import graph (the spec is hot-reloaded):
 1. Add an entry under `tools` with the right `kind`, the kind's required
    options, and an `input_schema`. **Set `enabled` explicitly on every entry**
    — it is mandatory (no default): `true` to expose the tool, `false` to hide
-   it; the bundled spec disables its 7 write/delete/external tools with
+   it; the bundled spec disables its 8 write/delete/external tools with
    `enabled: false` and sets `enabled: true` on the rest.
 2. Save the file. The next `tools/list` serves the new tool (see
    [Hot-reload](#hot-reload)).
