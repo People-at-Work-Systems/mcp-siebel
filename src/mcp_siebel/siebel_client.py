@@ -228,6 +228,50 @@ class SiebelClient:
             start_row = next_start_row
         return sorted(set(all_objects))
 
+    async def list_business_components(self, business_object: str) -> list[str]:
+        """List the Business Components exposed under one Business Object via the
+        REST data API.
+
+        Calls ``GET /data/{bo}/describe`` and extracts BC names from the
+        returned ``paths`` keys (shape ``/data/{bo}/{bc}`` or
+        ``/data/{bo}/{bc}/describe``). Paginates via the ``Link`` ``nextSet``
+        like ``list_business_objects``.
+
+        The exact endpoint shape is not exercised elsewhere in this codebase and
+        was implemented against the documented Siebel REST surface; a defensive
+        parse keeps the call working if the shape differs. On a 404 / SBL-EAI-50257
+        (BO not REST-exposed) returns ``[]`` rather than raising, so one BO with
+        no exposed BCs does not abort a discovery sweep.
+        """
+        bo = _enc(business_object)
+        all_components: list[str] = []
+        start_row = 0
+        page_size = 100
+        prefix = f"/data/{business_object}/"
+        while True:
+            params = {"PageSize": str(page_size), "pagination": "y"}
+            if start_row > 0:
+                params["StartRowNum"] = str(start_row)
+            try:
+                result = await self._request("GET", f"/data/{bo}/describe", query_params=params)
+            except SiebelError as exc:
+                if exc.status_code == 404 or "SBL-EAI-50257" in exc.response_body:
+                    return []
+                raise
+            for path in (result.get("paths") or {}).keys() if isinstance(result, dict) else []:
+                if not path.startswith(prefix):
+                    continue
+                rest = path[len(prefix):]
+                # Strip a trailing /describe or /{id} segment, then take the BC name.
+                bc = rest.split("/")[0]
+                if bc and bc.lower() != "describe":
+                    all_components.append(bc)
+            has_more, next_start_row = _parse_pagination_links(result.get("Link") if isinstance(result, dict) else None)
+            if not has_more or next_start_row is None:
+                break
+            start_row = next_start_row
+        return sorted(set(all_components))
+
     async def describe_bc(self, business_object: str, business_component: str) -> SiebelBCDescriptor:
         bo = _enc(business_object)
         bc = _enc(business_component)
@@ -399,6 +443,32 @@ class SiebelClient:
             "PUT",
             f"/data/{_enc(business_object)}/{_enc(business_component)}/{_enc(parent_id)}/{_enc(attachment_bc)}",
             body,
+        )
+
+    async def download_attachment(
+        self,
+        business_object: str,
+        business_component: str,
+        parent_id: str,
+        attachment_bc: str,
+        attachment_id: str,
+    ) -> SiebelRecord:
+        """Fetch one attachment row. The file contents come back base64-encoded
+        in the ``Attachment Id`` field (symmetric with ``upload_attachment``'s
+        PUT body, which sends ``"Attachment Id": base64_content``).
+
+        GETs the same attachment-BC child row URL that ``upload_attachment``
+        PUTs to, plus the attachment row Id. The exact response shape is not
+        exercised elsewhere in this codebase and was implemented against the
+        documented Siebel REST surface; the handler treats a missing/empty
+        ``Attachment Id`` as "no payload" and returns metadata only.
+        """
+        params = {"fields": "Attachment Id,FileName,FileExt,File Size,Comment"}
+        return await self._request(
+            "GET",
+            f"/data/{_enc(business_object)}/{_enc(business_component)}/{_enc(parent_id)}/"
+            f"{_enc(attachment_bc)}/{_enc(attachment_id)}",
+            query_params=params,
         )
 
     async def describe_repository_bc(

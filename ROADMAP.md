@@ -5,17 +5,17 @@ project is a work in progress and ships breaking changes without notice (see
 the README disclaimer). Use it to coordinate direction; track what actually
 landed in [`CHANGELOG.md`](CHANGELOG.md).
 
-Legend for the matrix: **●** slotted for that release · **○** partial work
-lands there · **–** not planned · blank = not yet slotted.
+Legend for the matrix: **✓** shipped · **●** slotted for that release · **○**
+partial work lands there · **–** not planned · blank = not yet slotted.
 
 ## Feature × release matrix
 
 | Feature | 0.2.2 | 0.3.0 | 0.4.0 | 0.5.0 | 0.6.0 | Future |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
 | **Tool-set gaps** | | | | | | |
-| Attachment download | ● | | | | | |
-| "Scroll all" cursor helper | ● | | | | | |
-| Repository discovery (REST-enabled BO/BC) | ● | | | | | |
+| Attachment download | ✓ | | | | | |
+| "Scroll all" cursor helper | ✓ | | | | | |
+| Repository discovery (REST-enabled BO/BC) | ✓ | | | | | |
 | Batch / multi-BC tool | | | | | | ● |
 | **CLI & operability** | | | | | | |
 | `--list-tools` | | ● | | | | |
@@ -42,6 +42,8 @@ lands there · **–** not planned · blank = not yet slotted.
 | Multi-tenancy | | | | | | – |
 
 ## 0.2.2 — Tool-set gaps
+
+**Shipped in 0.2.2** — see [`CHANGELOG.md`](CHANGELOG.md).
 
 **Theme:** close the most visible gaps in the bundled tool set.
 

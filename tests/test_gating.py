@@ -1,6 +1,6 @@
 """Read-only by default via the per-tool ``enabled`` flag in the spec.
 
-The bundled ``tool_specs.json`` sets ``"enabled": false`` on its 7
+The bundled ``tool_specs.json`` sets ``"enabled": false`` on its 8
 write/delete/external tools and ``"enabled": true`` on every other tool;
 ``enabled`` is mandatory on every entry (fail-closed — no silent default).
 The registry hides disabled tools from ``list_tools()`` and refuses them in
@@ -30,6 +30,7 @@ DISABLED_BY_DEFAULT = {
     "update_record",
     "create_child_record",
     "upload_attachment",
+    "download_attachment",
     "delete_record",
     "web_search",
 }
@@ -73,10 +74,10 @@ def test_list_tools_hides_disabled_tools_by_default() -> None:
     reg = ToolRegistry(AppSettings())
     names = _names(reg)
     assert not (names & DISABLED_BY_DEFAULT), f"disabled tools visible: {names & DISABLED_BY_DEFAULT}"
-    # the 19 enabled tools are present, including the session tool.
+    # the 21 enabled tools are present, including the session tool.
     assert "authenticate" in names
     assert "query_data" in names
-    assert len(names) == 19
+    assert len(names) == 21
 
 
 def test_bundled_spec_marks_the_seven_disabled() -> None:

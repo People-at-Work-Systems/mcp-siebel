@@ -59,8 +59,8 @@ under a lock. `list_tools()` and `call()` read that reference exactly once per
 request, so a request never mixes data from two spec versions.
 
 **Per-tool `enabled` is mandatory** (fail-closed — no silent default). The
-bundled spec sets `enabled: false` on the 7 write/delete/external tools
-(read-only by default) and `enabled: true` on the other 19.
+bundled spec sets `enabled: false` on the 8 write/delete/external tools
+(read-only by default) and `enabled: true` on the other 21.
 
 **Argument validation at call time.** `call()` hot-reloads, then validates
 `arguments` against the tool's resolved `input_schema` (a `Draft202012Validator`
@@ -123,7 +123,7 @@ token is set.
   required (no default).
 - **`tests/test_tool_specs.py`** — every bundled entry declares a known kind
   with valid options, resolves a real handler (for `python`), and carries an
-  explicit `enabled`; all 26 load.
+  explicit `enabled`; all 29 load.
 
 ## Running things
 

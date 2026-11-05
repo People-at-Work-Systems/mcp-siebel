@@ -58,6 +58,20 @@ class AppSettings(BaseSettings):
     max_queue_depth: int = Field(default=50, ge=1)
     aggregate_page_size: int = Field(default=100, ge=1, le=100)
     aggregate_max_pages: int = Field(default=500, ge=1)
+    # Upper bound on the bytes returned by download_attachment. A download whose
+    # decoded size exceeds this returns metadata only (name, ext, size, id) plus
+    # a notice, instead of the base64 body — protecting the MCP response budget.
+    # Hard ceiling 25 MiB mirrors Siebel's typical server-side attachment cap.
+    attachment_max_bytes: int = Field(default=2_097_152, ge=1, le=26_214_400)
+    # Per-call row ceiling for query_all_records (the "scroll all" helper). A
+    # caller-supplied max_records is clamped to this, so the caller can ask for
+    # fewer rows but never more. Hard ceiling 50k matches the aggregate loop's
+    # max (aggregate_max_pages x aggregate_page_size).
+    query_max_records: int = Field(default=10_000, ge=1, le=50_000)
+    # Cap on the number of Business Objects enumerated by
+    # list_rest_enabled_components when no business_object is given. Each BO costs
+    # one REST describe call, so this bounds the N+1 worst case.
+    discovery_max_business_objects: int = Field(default=100, ge=1, le=500)
 
     # -- Demo mode ------------------------------------------------------------
     demo_enabled: bool = False

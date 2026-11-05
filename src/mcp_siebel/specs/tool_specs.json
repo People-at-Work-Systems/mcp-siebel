@@ -423,6 +423,40 @@
         "additionalProperties": false
       }
     },
+    "download_attachment": {
+      "description": "Download an attachment from a Siebel record's attachment BC. Returns the file contents base64-encoded when the decoded size is under the configured size cap (SIEBEL_ATTACHMENT_MAX_BYTES), otherwise returns metadata only (name, extension, size, attachment id) with a notice that the file exceeds the cap. Counterpart to upload_attachment. Confirm with the user before downloading large attachments.",
+      "kind": "python",
+      "enabled": false,
+      "handler": "mcp_siebel.handlers.children:_download_attachment",
+      "input_schema": {
+        "properties": {
+          "attachment_bc": {
+            "description": "Business Component for the attachment, e.g. 'Account Attachment'.",
+            "type": "string"
+          },
+          "business_component": {
+            "$ref": "#/$defs/business_component"
+          },
+          "business_object": {
+            "$ref": "#/$defs/business_object"
+          },
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "parent_id": {
+            "$ref": "#/$defs/parent_id"
+          }
+        },
+        "required": [
+          "business_object",
+          "parent_id",
+          "attachment_bc",
+          "id"
+        ],
+        "type": "object",
+        "additionalProperties": false
+      }
+    },
     "get_list_of_values": {
       "description": "Fetch the allowed values of Siebel picklists by LOV type code, e.g. 'ACCOUNT_STATUS'. Find a field's LOV type with describe_repository. Use this before filtering on or writing a picklist field, so that you use a valid value.",
       "kind": "python",
@@ -547,6 +581,56 @@
       "source": "business_objects",
       "input_schema": {
         "properties": {},
+        "type": "object",
+        "additionalProperties": false
+      }
+    },
+    "list_rest_enabled_components": {
+      "description": "Discover the Business Components actually exposed through the REST data API for each Business Object. Returns a BO to BC list map. Builds on list_business_objects and describe_repository; use it to find what is really exposed before calling query_data or describe_business_object. With no business_object, the BO list is capped by the discovery_max_business_objects setting and the result is marked truncated if more BOs exist.",
+      "kind": "python",
+      "enabled": true,
+      "handler": "mcp_siebel.handlers.metadata:_list_rest_enabled_components",
+      "input_schema": {
+        "properties": {
+          "business_object": {
+            "$ref": "#/$defs/business_object"
+          }
+        },
+        "type": "object",
+        "additionalProperties": false
+      }
+    },
+    "query_all_records": {
+      "description": "Page through every record matching a searchspec on a Business Component, up to a per-call row ceiling (query_max_records, set via SIEBEL_QUERY_MAX_RECORDS). Use only when the full set is genuinely needed; for bounded queries prefer query_data with offset and page_size. Results are rendered as a Markdown table; if the ceiling is hit the result is marked truncated.",
+      "kind": "python",
+      "enabled": true,
+      "handler": "mcp_siebel.handlers.records:_query_all_records",
+      "input_schema": {
+        "properties": {
+          "business_component": {
+            "$ref": "#/$defs/business_component"
+          },
+          "business_object": {
+            "$ref": "#/$defs/business_object"
+          },
+          "fields": {
+            "$ref": "#/$defs/fields"
+          },
+          "max_records": {
+            "description": "Per-call ceiling on rows fetched. Capped by the query_max_records setting. Default: the setting's value.",
+            "type": "integer",
+            "minimum": 1
+          },
+          "searchspec": {
+            "$ref": "#/$defs/searchspec"
+          },
+          "sort_spec": {
+            "$ref": "#/$defs/sort_spec"
+          }
+        },
+        "required": [
+          "business_object"
+        ],
         "type": "object",
         "additionalProperties": false
       }
