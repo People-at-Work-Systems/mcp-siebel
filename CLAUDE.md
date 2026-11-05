@@ -17,6 +17,7 @@ server-side per session.
 
 Authoring reference: [`docs/tool-specs.md`](docs/tool-specs.md).
 Review/remediation history: [`docs/reviews/`](docs/reviews/).
+Roadmap (planning, not commitments): [`ROADMAP.md`](ROADMAP.md).
 
 ## Repo layout
 
