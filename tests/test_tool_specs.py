@@ -109,15 +109,16 @@ def test_registry_enforces_kind_options(tmp_path) -> None:
 
 def test_spec_entries_have_known_kind_and_valid_options() -> None:
     """Every bundled entry declares a known kind whose allowed options accept
-    it, and the registry loads them all. The 7 write/delete/external tools are
+    it, and the registry loads them all. The 8 write/delete/external tools are
     ``enabled: false`` in the bundled spec (read-only by default); every other
-    tool omits ``enabled`` (default true)."""
+    tool is ``enabled: true``."""
     disabled_expected = {
         "create_child_record",
         "create_record",
         "create_record_json",
         "update_record",
         "upload_attachment",
+        "download_attachment",
         "delete_record",
         "web_search",
     }

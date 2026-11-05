@@ -9,6 +9,7 @@ class SchemaCache:
     def __init__(self, client: SiebelClient) -> None:
         self.client = client
         self._business_objects: list[str] | None = None
+        self._business_components: dict[str, list[str]] = {}
         self._descriptors: dict[tuple[str, str], SiebelBCDescriptor] = {}
 
     async def get_business_objects(self) -> list[str]:
@@ -26,3 +27,8 @@ class SchemaCache:
         if key not in self._descriptors:
             self._descriptors[key] = await self.client.describe_bc(business_object, business_component)
         return self._descriptors[key]
+
+    async def get_business_components(self, business_object: str) -> list[str]:
+        if business_object not in self._business_components:
+            self._business_components[business_object] = await self.client.list_business_components(business_object)
+        return self._business_components[business_object]
